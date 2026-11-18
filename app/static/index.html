@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#080e19" />
+  <title>VisionGuard — AI Surveillance Intelligence</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div id="auth" class="auth-screen hidden">
+    <div class="auth-card">
+      <div class="mark large">◇</div><h1>VisionGuard</h1>
+      <p>Sign in to your VisionGuard workspace.</p>
+      <form id="login-form"><input id="username" autocomplete="username" placeholder="Username" value="admin" required /><input id="password" type="password" autocomplete="current-password" placeholder="Password" required /><button class="primary-btn" type="submit">Sign in</button></form>
+      <p class="error" id="login-error"></p>
+    </div>
+  </div>
+
+  <div class="app" id="application">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark">◇</div><div><strong>VISIONGUARD</strong><span>AI Surveillance Intelligence</span></div></div>
+      <div class="workspace-label">WORKSPACE <span class="mini-tag">LOCAL</span></div>
+      <nav class="nav">
+        <a class="nav-link selected" href="#overview">▦ &nbsp; Live overview</a>
+        <a class="nav-link" href="#events-panel">◷ &nbsp; Event history</a>
+        <a class="nav-link" href="#detection-config">⚙ &nbsp; Detection config</a>
+        <a class="nav-link" href="#alert-config">🔔 &nbsp; Alert settings</a>
+      </nav>
+      <div class="side-section-heading"><span>CAMERA NETWORK</span><button class="icon-btn" id="add-camera-side" title="Add a camera">+</button></div>
+      <div id="camera-list" class="camera-list"><p class="muted small">Loading cameras…</p></div>
+      <div class="side-bottom"><div class="system-dot"></div><div><b>On-device AI processing</b><small>Streams stay on your machine</small></div></div>
+    </aside>
+
+    <main class="main-content" id="overview">
+      <header class="topbar"><div class="breadcrumb">OPERATIONS <span>/</span> LIVE MONITORING</div><div class="top-right"><span class="live-indicator"><i></i> LIVE SYSTEM</span><span id="clock" class="clock"></span><button id="logout" class="link-btn hidden">Log out</button></div></header>
+      <section class="heading-row"><div><div class="eyebrow">VIDEO ANALYTICS PLATFORM</div><h1>Security overview <span class="heading-spark">✦</span></h1><p class="subtitle">Real-time multi-model AI intelligence across connected cameras</p></div><button class="primary-btn" id="add-camera">+ &nbsp; Add camera</button></section>
+
+      <section class="stats-grid" aria-label="Live monitoring statistics">
+        <div class="stat-card"><div class="stat-head">ACTIVE CAMERAS <span class="stat-symbol teal">▦</span></div><div class="stat-value" id="stat-online">—</div><div class="stat-foot"><span class="small-circle green"></span> <span id="stat-cameras-detail">Camera network</span></div></div>
+        <div class="stat-card"><div class="stat-head">PEOPLE IN VIEW <span class="stat-symbol blue">♙</span></div><div class="stat-value" id="stat-people">—</div><div class="stat-foot">Current tracked individuals</div></div>
+        <div class="stat-card"><div class="stat-head">INTRUSIONS (24H) <span class="stat-symbol red">⚑</span></div><div class="stat-value" id="stat-intrusions">—</div><div class="stat-foot">Restricted-zone alerts</div></div>
+        <div class="stat-card"><div class="stat-head">TOTAL LINE CROSSINGS <span class="stat-symbol gold">↹</span></div><div class="stat-value" id="stat-crossings">—</div><div class="stat-foot" id="stat-crossings-detail">Entry / exit totals</div></div>
+        <div class="stat-card"><div class="stat-head">FIRE ALERTS (24H) <span class="stat-symbol red">🔥</span></div><div class="stat-value" id="stat-fire">—</div><div class="stat-foot">Fire & smoke detections</div></div>
+        <div class="stat-card"><div class="stat-head">VIOLENCE ALERTS (24H) <span class="stat-symbol red">⚔</span></div><div class="stat-value" id="stat-violence">—</div><div class="stat-foot">Fight, weapon, assault detections</div></div>
+      </section>
+
+      <section class="workspace-grid">
+        <div class="panel player-panel">
+          <div class="panel-header"><div><div class="panel-title"><span class="tiny-camera-icon">▣</span> <span id="selected-title">Camera preview</span></div><div class="panel-description" id="selected-subtitle">Select a camera to view analytics</div></div><span class="status-pill" id="selected-status">NO SIGNAL</span></div>
+          <div class="video-display" id="video-display">
+            <div class="video-empty" id="video-empty"><div class="empty-icon">▣</div><h3>No active video feed</h3><p>Add an RTSP stream, USB webcam or a video file to start.</p><button class="outline-btn" id="empty-add">Configure camera</button></div>
+            <img id="video-feed" alt="Live camera video feed" class="hidden" />
+            <svg id="draw-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-label="Zone editor" class="hidden"></svg>
+            <div class="video-stamp" id="video-stamp">● LIVE ANALYTICS</div>
+            <div class="detection-badges" id="detection-badges"></div>
+          </div>
+          <div class="player-bottom"><div class="model-label"><span class="ai-chip">AI</span> YOLOv8n <span>·</span> ByteTrack <span>·</span> Person <span>·</span> Fire <span>·</span> Violence <span>·</span> Pose</div><div class="camera-metrics"><span id="current-count">0 people</span><span id="current-fps">0 FPS</span></div></div>
+          <div class="drawing-toolbar"><div><b>Detection rules</b><small>Use normalized coordinates to configure a restricted zone or crossing line.</small></div><div class="tool-actions"><button class="outline-btn" id="draw-zone">Draw zone</button><button class="outline-btn" id="draw-line">Draw line</button><button class="primary-btn hidden" id="save-drawing">Save rule</button><button class="subtle-btn hidden" id="cancel-drawing">Cancel</button><button class="danger-soft" id="remove-zone">Clear zone</button><button class="danger-soft" id="remove-line">Clear line</button><button class="outline-btn" id="edit-camera">Edit source</button><button class="outline-btn" id="test-camera">Test connection</button><button class="subtle-btn" id="toggle-camera">Pause camera</button><button class="danger-soft" id="delete-camera">Delete camera</button></div></div>
+          <div id="editor-hint" class="editor-hint hidden"></div>
+        </div>
+
+        <div class="panel intelligence-panel"><div class="panel-header"><div><div class="panel-title">⚡ &nbsp; Threat intelligence</div><div class="panel-description">Recent security detections</div></div><span class="mini-tag">REAL TIME</span></div>
+          <div class="alert-explainer"><div class="shield-symbol">♧</div><div><strong>Multi-model detection active</strong><p>Intrusion zones, fire/smoke, violence/weapons, falls, loitering — all running locally.</p></div></div>
+          <div class="panel-subhead">LATEST ALERTS <span id="alert-counter">0</span></div><div id="alert-list" class="alert-list"></div>
+          <div class="intelligence-footer"><span class="small-circle green"></span> Event engine <strong id="event-engine-status">Ready</strong></div>
+        </div>
+      </section>
+
+      <section class="panel test-video-panel" id="video-testing"><div class="panel-header"><div><div class="panel-title">🧪 &nbsp; Upload video for AI testing</div><div class="panel-description">Test fire/smoke early warnings, weapons, knife/gun candidates, fighting, falls and unusual activity on a local clip.</div></div><span class="mini-tag">LOCAL PROCESSING</span></div><div class="test-video-content"><form id="test-video-form"><label class="upload-drop" for="test-video-file"><span class="upload-icon">⇧</span><strong>Select a test video</strong><small>MP4, AVI, MOV, MKV, WEBM or M4V · up to 250 MB</small><input id="test-video-file" type="file" accept="video/mp4,video/avi,video/quicktime,video/x-matroska,video/webm,.m4v" required /></label><div class="test-video-actions"><span id="test-video-filename" class="muted small">No file selected</span><button id="run-video-test" class="primary-btn" type="submit">Upload & analyse</button></div></form><div id="test-video-progress" class="hidden"><div class="progress-track"><span></span></div><p>Analysing video locally. Longer clips may take several minutes…</p></div><div id="test-video-results" class="test-video-results hidden"></div><video id="test-video-output" class="test-video-output hidden" controls playsinline></video><p class="field-hint">Minimum model confidence: 50%. Alert sound is local TTS only; Telegram is disabled. A smoke/heat detection is an early warning, not a guaranteed prediction of future fire.</p></div></section>
+
+      <section class="panel events-panel" id="events-panel"><div class="panel-header events-head"><div><div class="panel-title">◷ &nbsp; Event activity</div><div class="panel-description">Detection and line-crossing audit log</div></div><div class="events-actions"><select id="filter-kind" aria-label="Filter event type"><option value="">All events</option><optgroup label="Core"><option value="intrusion">Intrusions</option><option value="entry">Entries</option><option value="exit">Exits</option></optgroup><optgroup label="Fire & Safety"><option value="fire_detected">Fire detected</option><option value="smoke">Smoke detected</option><option value="heat_source">Heat source</option></optgroup><optgroup label="Violence & Weapons"><option value="violence">Violence</option><option value="weapon">Weapon</option><option value="fight">Fight</option><option value="assault">Assault</option><option value="proximity_alert">Suspicious proximity</option></optgroup><optgroup label="Anomaly"><option value="fall_detected">Fall detected</option><option value="loitering">Loitering</option></optgroup></select><a class="outline-btn" href="/api/events.csv" id="export-csv">↓ Export CSV</a></div></div><div class="table-wrap"><table><thead><tr><th>EVENT</th><th>CAMERA</th><th>DETAIL</th><th>TIMESTAMP</th><th>SEVERITY</th><th>SNAPSHOT</th></tr></thead><tbody id="events-body"></tbody></table></div></section>
+
+      <section class="panel" id="detection-config"><div class="panel-header"><div><div class="panel-title">⚙ &nbsp; Detection configuration</div><div class="panel-description">Enable/disable detection models per camera</div></div></div>
+        <div id="detection-config-content" class="config-grid">
+          <p class="muted small">Select a camera to configure detection modules.</p>
+        </div>
+      </section>
+
+      <section class="panel" id="alert-config"><div class="panel-header"><div><div class="panel-title">🔔 &nbsp; Alert configuration</div><div class="panel-description">Configure local voice siren and optional Telegram security alerts</div></div></div>
+        <div class="config-grid">
+          <div class="config-section">
+            <h3>🔊 Voice Siren (TTS)</h3>
+            <div class="form-group">
+              <label>Enabled <input type="checkbox" id="tts-enabled" checked /></label>
+            </div>
+            <div class="form-group">
+              <label>Voice Rate <input type="range" id="tts-rate" min="50" max="300" value="180" /><span id="tts-rate-value">180</span></label>
+            </div>
+            <div class="form-group">
+              <label>Volume <input type="range" id="tts-volume" min="0" max="100" value="100" /><span id="tts-volume-value">100%</span></label>
+            </div>
+            <button class="primary-btn" id="test-tts">Test Voice Alert</button>
+            <p class="form-hint">Uses offline Windows SAPI (pyttsx3). No internet required.</p>
+            <p class="form-hint small">Siren triggers on: fire, smoke, violence, weapon, fight, assault, intrusion</p>
+          </div>
+          <div class="config-section">
+            <h3>📨 Telegram Security Alerts</h3>
+            <p class="form-hint">Configure TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in your private .env file, then enable Telegram on each camera. Only configured suspicious events with confidence strictly greater than 75% are sent. Events without a model confidence score are never sent.</p>
+            <p class="form-hint small">Supported: intrusion, fire, smoke, weapon/knife/gun, fighting/assault, fall, loitering and suspicious proximity. Repeat alerts are rate-limited.</p>
+            <h3>⚡ Test All Alerts</h3>
+            <button class="primary-btn" id="test-all-alerts">Test Voice & Telegram</button>
+            <div id="alert-test-results" class="test-results hidden"></div>
+          </div>
+          <div class="config-section" style="margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line);">
+            <h3>🗑 System Maintenance</h3>
+            <p class="form-hint">Clear all events, alert logs, snapshots, and test videos for a fresh start. This action cannot be undone.</p>
+            <button class="danger-soft" id="clear-all-data" style="margin-top: 8px;">Clear All Data & Reset</button>
+            <p class="form-hint small" id="clear-data-status"></p>
+          </div>
+        </div>
+      </section>
+
+
+      <section class="panel hidden" id="client-admin-panel"><div class="panel-header"><div><div class="panel-title">👥 &nbsp; Client workspaces</div><div class="panel-description">Create separate client logins and assign cameras to each client.</div></div></div><div class="config-grid"><div class="config-section"><h3>Create client</h3><form id="client-form"><label>Client / home name<input name="name" required placeholder="e.g. Sharma Residence" /></label><label>Username<input name="username" required minlength="3" /></label><label>Temporary password<input name="password" type="password" required minlength="8" /></label><button class="primary-btn" type="submit">Create client login</button><p class="error" id="client-error"></p></form></div><div class="config-section"><h3>Client accounts</h3><div id="client-list">No clients created yet.</div></div></div></section>
+      <footer class="footer">VISIONGUARD <span>•</span> Local-first AI camera analytics <span>•</span> Multi-model detection <span>•</span> No cloud recording</footer>
+    </main>
+  </div>
+
+  <div class="modal-backdrop hidden" id="camera-modal"><div class="modal"><div class="modal-title"><h2 id="camera-modal-title">Add a video source</h2><button class="close-btn" id="close-modal" aria-label="Close">×</button></div><p class="modal-description">Use a network stream or local webcam. The source is stored locally.</p><form id="camera-form"><label>Camera name<input name="name" required maxlength="80" placeholder="e.g. Main entrance" /></label><label>Camera source<input name="source" required placeholder="0 or rtsp://camera-ip:554/stream1" /></label><div class="modal-actions" style="justify-content:flex-start;margin-top:-8px;flex-wrap:wrap;gap:8px"><button class="outline-btn" type="button" id="discover-usb">Discover USB cameras</button><button class="outline-btn" type="button" id="test-camera-source">Test source</button><button class="primary-btn" type="button" id="start-webcam-test">🎥 Start Webcam Test</button></div><label id="client-assignment-wrap">Assign to client<select name="client_id" id="camera-client"><option value="">Administrator / Unassigned</option></select></label><div class="field-hint">USB webcam: <code>0</code> · RTSP: <code>rtsp://...</code> · Video: <code>C:\\Videos\\demo.mp4</code></div><p class="error" id="camera-error"></p><div class="modal-actions"><button class="outline-btn" type="button" id="cancel-modal">Cancel</button><button class="primary-btn" type="submit">Add & connect</button></div></form></div></div>
+  <div id="snapshot-modal" class="modal-backdrop hidden" role="dialog"><div class="snapshot-dialog"><button id="close-snapshot" class="close-btn">×</button><img id="snapshot-img" alt="Captured event frame" /></div></div>
+  <div id="toast-area" aria-live="polite"></div>
+  <script src="/static/app.js" defer></script>
+</body></html>
