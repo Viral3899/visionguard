@@ -54,3 +54,13 @@
 - Events without an explicit model confidence score (for example, pure line-crossing analytics) are not sent.
 - Notifications are rate-limited per camera and event type.
 - Existing installations get a one-time migration to enable the per-camera switch; user changes are preserved on later restarts.
+
+
+## 2.1.1 — event snapshot, Telegram and detector fixes
+
+- Live detections are deduplicated by event identity and cooldown. Routine entry/exit/presence/loitering frames no longer create image files; still images are saved for security detections only.
+- Fire/smoke inference now runs on every processed frame. The fire detector no longer filters on assumed class IDs, avoiding missed detections when a fire checkpoint uses a different class order; supported fire/smoke labels are checked from the model itself.
+- Telegram suspicious-event threshold is now **50% inclusive**. Loitering is excluded from Telegram delivery.
+- Uploaded-video tests apply the same 50% confidence floor, confirm an event across at least two analyzed frames, save one annotated still per confirmed event type, and can send the still to Telegram when credentials are configured.
+- The upload result now displays saved event photos. Regular video frames are not saved as still-image snapshots.
+- The bundled pose model is not a general unusual-action classifier. Generic unusual activity requires a separate trained action-recognition model; current supported behavior checks remain fall/pose, weapon/fire, and configured detector classes.

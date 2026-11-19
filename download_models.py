@@ -40,24 +40,12 @@ def main():
     
     # Core models
     for name, desc in MODELS.items():
-        download_model(name, desc)
+        if not download_model(name, desc):
+            raise SystemExit(1)
     
     print("\n" + "=" * 60)
-    print("NOTE: Fire and Violence models need custom training.")
-    print("Options:")
-    print("  1. Train your own: yolo detect train data=fire.yaml model=yolov8n.pt epochs=100")
-    print("  2. Use YOLO-World for open-vocabulary detection")
-    print("  3. Download community models from:")
-    print("     - https://github.com/ultralytics/assets/releases")
-    print("     - Roboflow Universe (search 'fire', 'smoke', 'violence', 'weapon')")
-    print("=" * 60)
-    
-    # Create placeholder files so app doesn't crash
-    for placeholder in ['yolov8n-fire.pt', 'yolov8n-violence.pt']:
-        path = MODELS_DIR / placeholder
-        if not path.exists():
-            print(f"\n⚠ {placeholder} not found - creating placeholder")
-            print(f"   Replace with your trained model at: {path}")
+    print("Fire weights are included in the release. Run python check_fire.py to verify your configuration.")
+    print("Violence detection needs a separately qualified model.")
 
 if __name__ == '__main__':
     main()

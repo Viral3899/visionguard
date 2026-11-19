@@ -12,14 +12,15 @@ import numpy as np
 
 from .alerts import AlertEvent, AlertManager
 from .analytics import Analytics
-from .config import settings
+from .config import local_model_path, settings
 from .database import Database
 from .detectors import DetectionManager
+from .incidents import IncidentTracker, eligible_event, draw_event_box
 
-def event_meets_confidence_floor(event: dict, threshold: float = 0.30) -> bool:
+def event_meets_confidence_floor(event: dict, threshold: float = 0.50) -> bool:
     """Keep analytics events without model confidence; reject model scores below threshold.
     
-    Lowered from 0.50 to 0.30 to allow detection of small flames (matchstick) and knives.
+    The global policy rejects model events below 50%; model-specific thresholds cannot bypass it.
     """
     confidence = event.get('confidence')
     if confidence is None:
@@ -31,6 +32,11 @@ def event_meets_confidence_floor(event: dict, threshold: float = 0.30) -> bool:
 
 
 LOGGER = logging.getLogger(__name__)
+# Still images are reserved for meaningful security detections, never routine
+# presence/entry/exit/loitering frames.
+SNAPSHOT_EVENT_KINDS = frozenset({
+    'fire_detected', 'smoke', 'violence', 'weapon', 'fall_detected', 'unusual_activity'
+})
 os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'rtsp_transport;tcp')
 
 
@@ -71,7 +77,11 @@ class CameraWorker:
         self.last_frame = 0.0
         self.camera_config = db.get_camera_config(camera['id']) or {}
         self._last_frame_error = ''
+        self._last_saved_event: dict[str, float] = {}
         self.detection_manager = DetectionManager()
+        self.incidents = IncidentTracker(settings.incident_min_confidence,
+                                         settings.incident_confirmation_frames,
+                                         max_missed_frames=max(2, settings.object_every_n_frames))
         self._init_anomaly_detector()
     
     def _init_anomaly_detector(self):
@@ -109,7 +119,7 @@ class CameraWorker:
                 ])
             except (TypeError, cv2.error):
                 return cv2.VideoCapture(value, cv2.CAP_FFMPEG)
-        if isinstance(value, int) and hasattr(cv2, 'CAP_DSHOW'):
+        if isinstance(value, int) and os.name == 'nt' and hasattr(cv2, 'CAP_DSHOW'):
             cap = cv2.VideoCapture(value, cv2.CAP_DSHOW)
             if cap.isOpened():
                 return cap
@@ -118,7 +128,7 @@ class CameraWorker:
 
     def _new_model(self):
         from ultralytics import YOLO
-        return YOLO(settings.model_path)
+        return YOLO(local_model_path(settings.model_path))
 
     def _run(self):
         src = self.camera['source']
@@ -130,6 +140,8 @@ class CameraWorker:
                 cap = self._capture(src)
                 if not cap.isOpened():
                     raise RuntimeError('Unable to open camera stream. Check URL, network, codec or webcam permissions.')
+                # Keep only the newest frame so a slow inference loop does not build latency.
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 self.status = 'loading model'
                 model = self._new_model()
                 analytics = Analytics(self.camera['zone'], self.camera['tripwire'], settings.event_cooldown_seconds)
@@ -150,20 +162,11 @@ class CameraWorker:
                     h, w = frame.shape[:2]
                     
                     # Run person detection + tracking
-                    # Auto-detect device: use CUDA if available, otherwise CPU
-                    import torch
-                    device = settings.device
-                    if device == 'auto':
-                        device = '0' if torch.cuda.is_available() else 'cpu'
-                    
-                    # CUDA automatically uses FP16 when available, no need for half/quantize parameter
-                    # (half parameter is deprecated in newer Ultralytics versions)
-                    
                     args: dict[str, Any] = {'persist': True, 'tracker': 'bytetrack.yaml',
                                             'classes': list(settings.detect_class_ids), 'conf': max(0.40, settings.confidence),
                                             'imgsz': settings.imgsz, 'verbose': False}
-                    if device != 'auto':
-                        args['device'] = device
+                    if settings.device != 'auto':
+                        args['device'] = settings.device
                     result = model.track(frame, **args)[0]
                     persons = []
                     person_boxes = []
@@ -176,7 +179,7 @@ class CameraWorker:
                         person_result = DetectionResult(
                             boxes=boxes,
                             classes=classes,
-                            confidences=result.boxes.conf.cpu().tolist() if result.boxes.conf is not None else [1.0]*len(boxes),
+                            confidences=(result.boxes.conf.cpu().tolist() if getattr(result.boxes, 'conf', None) is not None else [1.0]*len(boxes)),
                             class_names=result.names if hasattr(result, 'names') else {0: 'person'}
                         )
                         # Draw person tracking with improved visuals
@@ -192,7 +195,7 @@ class CameraWorker:
                         person_boxes_filtered = [b for b, c in zip(boxes, classes) if c == 0]
                         person_classes_filtered = [c for c in classes if c == 0]
                         person_conf_filtered = [conf for conf, c in zip(person_result.confidences, classes) if c == 0]
-                        if person_boxes_filtered:
+                        if person_boxes_filtered and hasattr(self.detection_manager, 'object_detector'):
                             person_result_draw = DetectionResult(
                                 boxes=person_boxes_filtered,
                                 classes=person_classes_filtered,
@@ -210,23 +213,18 @@ class CameraWorker:
                     detection_events = self.detection_manager.process_frame(
                         frame, persons, self.camera['id'], self.camera_config)
                     
-                    # Combine all events
-                    all_events = events + (detection_events or [])
-                    # A detector must return event dictionaries. Ignore malformed plugin/model
-                    # outputs instead of killing the camera worker for every subsequent frame.
-                    valid_events = []
-                    for item in all_events:
+                    # Analytics still update counters, but never generate routine
+                    # snapshots or Telegram. Security snapshots require repeated,
+                    # real >=50% model evidence and one still per active incident.
+                    for item in events:
                         if isinstance(item, dict):
-                            # Ignore model-generated detections below the global 50% floor.
-                            # Analytics events (zone/line crossings) have no confidence and remain valid.
-                            if not event_meets_confidence_floor(item, 0.50):
-                                continue
-                            valid_events.append(item)
                             self._handle_event(frame, item)
-                        else:
-                            LOGGER.warning('Ignoring malformed detection event from %s: %s',
-                                           self.camera['id'], type(item).__name__)
-                    all_events = valid_events
+                    raw_detections = [item for item in (detection_events or []) if isinstance(item, dict)]
+                    confirmed = self.incidents.update(raw_detections, time.monotonic())
+                    for item in confirmed:
+                        self._handle_event(frame, item)
+                    all_events = events + [item for item in raw_detections
+                                           if eligible_event(item, settings.incident_min_confidence)]
                     
                     self._draw_geometry(frame, w, h)
                     cv2.rectangle(frame, (12,12), (204,48), (10,20,34), -1)
@@ -248,7 +246,9 @@ class CameraWorker:
                 with self.jpeg_lock: self.jpeg = None
                 self.status = 'reconnecting'
                 self.error = str(exc).replace(src, '[stream]')[:180]
+                import traceback
                 LOGGER.warning('Camera %s: %s', self.camera['id'], self.error)
+                LOGGER.debug('Camera %s traceback: %s', self.camera['id'], traceback.format_exc())
             finally:
                 if cap is not None: cap.release()
             self.current_people = 0
@@ -262,16 +262,36 @@ class CameraWorker:
         message = event.get('message', f'{event_kind} detected')
         severity = event.get('severity', 'medium')
         camera_id = event.get('camera_id', self.camera['id'])
+
+        # Avoid both DB noise and a false low-score event consuming the
+        # cooldown for a subsequent true >=50% detection.
+        if event_kind in {'loitering', 'proximity_alert', 'heat_source', 'fire_watch'}:
+            return
+        if event_kind in SNAPSHOT_EVENT_KINDS and not eligible_event(event, settings.incident_min_confidence):
+            return
         
+        # Suppress repeated per-frame detections. Save and alert once per event
+        # identity during the configured cooldown, not once for every matching frame.
+        identity = f"{event_kind}:{track_id if track_id is not None else event.get('subtype', 'global')}"
+        now = time.monotonic()
+        cooldown = max(1, int(settings.event_cooldown_seconds))
+        previous = self._last_saved_event.get(identity, float('-inf'))
+        if now - previous < cooldown:
+            return
+        self._last_saved_event[identity] = now
+
         # Save snapshot
         snapshot_filename = None
-        dest = settings.data_dir / 'snapshots'
-        dest.mkdir(parents=True, exist_ok=True)
-        from uuid import uuid4
-        filename = uuid4().hex + '.jpg'
-        path = dest / filename
-        if cv2.imwrite(str(path), frame):
-            snapshot_filename = filename
+        confirmed_threat = event_kind in SNAPSHOT_EVENT_KINDS and eligible_event(event, settings.incident_min_confidence)
+        if confirmed_threat:
+            dest = settings.data_dir / 'snapshots'
+            dest.mkdir(parents=True, exist_ok=True)
+            from uuid import uuid4
+            filename = uuid4().hex + '.jpg'
+            path = dest / filename
+            snapshot_frame = draw_event_box(frame.copy(), event)
+            if cv2.imwrite(str(path), snapshot_frame):
+                snapshot_filename = filename
         
         # Store in database
         metadata = {k: v for k, v in event.items() if k not in ('type', 'kind', 'track_id', 'message', 'severity', 'camera_id', 'bbox', 'confidence')}
@@ -302,24 +322,41 @@ class CameraWorker:
             metadata=metadata,
             timestamp=db_event['created_at']
         )
-        self.alert_manager.process_event(alert_event, self.camera_config)
+        if confirmed_threat:
+            self.alert_manager.process_event(alert_event, self.camera_config)
 
     def _draw_geometry(self, frame, w, h):
-        zone = self.camera['zone']
-        if len(zone) >= 3:
-            import numpy as np
-            poly = np.array([(round(x*w), round(y*h)) for x,y in zone], dtype=np.int32)
-            overlay = frame.copy()
-            cv2.fillPoly(overlay, [poly], (48,60,200))
-            cv2.addWeighted(overlay, .18, frame, .82, 0, frame)
-            cv2.polylines(frame, [poly], True, (75,94,255), 2)
-            cv2.putText(frame, 'RESTRICTED', tuple(poly[0]), cv2.FONT_HERSHEY_SIMPLEX, .5, (75,94,255), 2)
-        line = self.camera['tripwire']
-        if len(line) == 2:
-            (x1,y1),(x2,y2) = line
-            cv2.line(frame, (round(x1*w),round(y1*h)), (round(x2*w),round(y2*h)), (40,198,245), 3)
-            cv2.putText(frame, 'COUNT LINE', (round(x1*w),max(18,round(y1*h)-10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, .5, (40,198,245), 2)
+        zone = self.camera.get('zone', [])
+        # Validate zone: must be list of [x, y] pairs with at least 3 points
+        if isinstance(zone, list) and len(zone) >= 3:
+            try:
+                # Filter out invalid points (not 2-element sequences)
+                valid_zone = [p for p in zone if isinstance(p, (list, tuple)) and len(p) == 2]
+                if len(valid_zone) >= 3:
+                    import numpy as np
+                    poly = np.array([(round(x*w), round(y*h)) for x, y in valid_zone], dtype=np.int32)
+                    overlay = frame.copy()
+                    cv2.fillPoly(overlay, [poly], (48,60,200))
+                    cv2.addWeighted(overlay, .18, frame, .82, 0, frame)
+                    cv2.polylines(frame, [poly], True, (75,94,255), 2)
+                    cv2.putText(frame, 'RESTRICTED', tuple(poly[0]), cv2.FONT_HERSHEY_SIMPLEX, .5, (75,94,255), 2)
+            except (ValueError, TypeError, IndexError) as e:
+                LOGGER.debug('Invalid zone data for camera %s: %s', self.camera['id'], e)
+        
+        line = self.camera.get('tripwire', [])
+        # Validate tripwire: must be exactly 2 points, each with [x, y]
+        if isinstance(line, list) and len(line) == 2:
+            try:
+                p1, p2 = line[0], line[1]
+                if (isinstance(p1, (list, tuple)) and len(p1) == 2 and
+                    isinstance(p2, (list, tuple)) and len(p2) == 2):
+                    x1, y1 = p1
+                    x2, y2 = p2
+                    cv2.line(frame, (round(x1*w),round(y1*h)), (round(x2*w),round(y2*h)), (40,198,245), 3)
+                    cv2.putText(frame, 'COUNT LINE', (round(x1*w),max(18,round(y1*h)-10)),
+                                cv2.FONT_HERSHEY_SIMPLEX, .5, (40,198,245), 2)
+            except (ValueError, TypeError, IndexError) as e:
+                LOGGER.debug('Invalid tripwire data for camera %s: %s', self.camera['id'], e)
 
     def _draw_detection_status(self, frame, events):
         """Draw active detection badges on frame."""

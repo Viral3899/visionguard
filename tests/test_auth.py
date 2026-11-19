@@ -53,3 +53,22 @@ def test_admin_source_edit_endpoint_is_not_exposed_to_client(tmp_path, monkeypat
     with TestClient(app) as tenant:
         tenant.post('/api/login',json={'username':'tenantuser','password':'tenant-pass-123'})
         assert tenant.get(f'/api/cameras/{cid}/source').status_code==403
+
+
+def test_client_history_scoped_before_limit(tmp_path):
+    from app.database import Database
+    from app.schemas import CameraCreate
+
+    db = Database(tmp_path / 'history.db')
+    db.init()
+    tenant = db.create_client('Client', 'tenant', 'unused')['id']
+    assigned = db.create_camera(CameraCreate(name='Assigned', source='0', client_id=tenant))
+    other = db.create_camera(CameraCreate(name='Other', source='1'))
+    for cam in (assigned, other):
+        event = db.store_event(cam['id'], cam['name'], 'intrusion', None, 'motion', cam['id']+'.jpg')
+        db.log_alert(event['id'], 'tts', 'triggered')
+    assert db.events(limit=1, client_id=tenant)[0]['camera_id'] == assigned['id']
+    assert len(db.alert_log(limit=1, client_id=tenant)) == 1
+    assert db.stats(client_id=tenant)['intrusions_24h'] == 1
+    assert db.client_owns_snapshot(tenant, assigned['id']+'.jpg')
+    assert not db.client_owns_snapshot(tenant, other['id']+'.jpg')

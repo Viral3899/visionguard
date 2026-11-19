@@ -19,20 +19,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 SUSPICIOUS_TELEGRAM_KINDS = {
-    'intrusion', 'fire', 'fire_detected', 'smoke', 'violence', 'weapon',
-    'knife', 'gun', 'fight', 'assault', 'fall_detected', 'loitering',
-    'proximity_alert', 'heat_source',
+    'fire_detected', 'smoke', 'violence', 'weapon', 'fall_detected', 'unusual_activity',
+    'fight', 'knife', 'gun', 'assault',  # supported aliases from specialist models
 }
 
 
-def telegram_event_eligible(kind: str, confidence: Any, minimum: float = 0.75) -> bool:
-    """Only notify for allow-listed security events with score strictly above minimum."""
+def telegram_event_eligible(kind: str, confidence: Any, minimum: float = 0.50) -> bool:
+    """Notify for allow-listed security events at or above the configured confidence floor."""
     try:
         score = float(confidence)
     except (TypeError, ValueError):
         return False
     normalized = str(kind).strip().lower()
-    return normalized in SUSPICIOUS_TELEGRAM_KINDS and score > minimum
+    return normalized in SUSPICIOUS_TELEGRAM_KINDS and score >= minimum
 
 
 @dataclass
@@ -261,8 +260,8 @@ class AlertManager:
         """Process event through all enabled alert channels."""
         event_id = event.event_id
         
-        # Telegram is only for configured suspicious/security event classes, per-camera opt-in,
-        # and a strict confidence score greater than 75%. Analytics events without a model
+        # Telegram is only for configured confirmed security event classes, per-camera opt-in,
+        # and a score >= 50%. Analytics events without a model
         # confidence score are deliberately excluded from Telegram notifications.
         confidence = None
         if isinstance(event.metadata, dict):
@@ -283,11 +282,13 @@ class AlertManager:
         if camera_config.get('tts_enabled', 1) and self.tts.enabled:
             if self._check_cooldown(f'tts:{event.camera_id}:{kind}', settings.siren_duration_seconds * settings.siren_repeat_count):
                 self.tts.trigger_alert(event)
+                # Log TTS alert attempt
+                self.db.log_alert(event_id, 'tts', 'triggered', f'TTS alert: {event.kind}')
     
     def _check_cooldown(self, kind: str, cooldown: int) -> bool:
         """Check if enough time has passed since last alert of this kind."""
         now = time.monotonic()
-        last = self._last_alert_time.get(kind, 0)
+        last = self._last_alert_time.get(kind, float('-inf'))
         if now - last >= cooldown:
             self._last_alert_time[kind] = now
             return True

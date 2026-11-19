@@ -3,7 +3,7 @@ from app.main import create_app
 
 
 def test_full_camera_crud_and_events(tmp_path):
-    app=create_app(tmp_path/'test.db',start_cameras=False)
+    app=create_app(tmp_path/'test.db',start_cameras=False,auto_camera=False)
     with TestClient(app) as client:
         assert client.get('/api/stats').json()['cameras']==0
         r=client.post('/api/cameras',json={'name':'Gate A','source':'0','enabled':False})

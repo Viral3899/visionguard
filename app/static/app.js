@@ -7,18 +7,18 @@ const kindTitle = {
   fire_detected: 'Fire detected', smoke: 'Smoke detected', heat_source: 'Heat source',
   violence: 'Violence', weapon: 'Weapon detected', fight: 'Fight detected',
   assault: 'Assault', proximity_alert: 'Suspicious proximity',
-  fall_detected: 'Fall detected', loitering: 'Loitering'
+  fall_detected: 'Fall detected', loitering: 'Loitering', unusual_activity: 'Unusual activity'
 };
 const kindSeverity = {
   fire_detected: 'critical', smoke: 'high', heat_source: 'low',
   violence: 'critical', weapon: 'critical', fight: 'critical', assault: 'high', proximity_alert: 'medium',
-  fall_detected: 'high', loitering: 'medium', intrusion: 'high', entry: 'low', exit: 'low'
+  fall_detected: 'high', loitering: 'medium', unusual_activity: 'high', intrusion: 'high', entry: 'low', exit: 'low'
 };
 const kindIcon = {
   intrusion: '⚑', entry: '↗', exit: '↘',
   fire_detected: '🔥', smoke: '💨', heat_source: '🌡',
   violence: '⚔', weapon: '🔫', fight: '🤜', assault: '👊', proximity_alert: '⚠',
-  fall_detected: '🧍‍♂️➡️🧎', loitering: '🕐'
+  fall_detected: '🧍‍♂️➡️🧎', loitering: '🕐', unusual_activity: '⚠'
 };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmtTime = (s) => s ? new Date(s).toLocaleString('en-IN', { timeZone:'Asia/Kolkata', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:true }) : '—';
@@ -185,7 +185,7 @@ function renderEvents() {
     $('snapshot-img').src = `/api/snapshots/${encodeURIComponent(btn.dataset.snapshot)}`;
     $('snapshot-modal').classList.remove('hidden');
   });
-  const recent = state.events.filter(item => ['intrusion','fire_detected','smoke','violence','weapon','fight','assault','fall_detected','proximity_alert'].includes(item.kind)).slice(0, 5);
+  const recent = state.events.filter(item => ['intrusion','fire_detected','smoke','violence','weapon','fight','assault','fall_detected','proximity_alert','unusual_activity'].includes(item.kind)).slice(0, 5);
   $('alert-counter').textContent = String(recent.length);
   $('alert-list').innerHTML = recent.length ? recent.map(item => `<div class="alert-item"><span class="alert-dot">${kindIcon[item.kind] || '⚑'}</span><div>
     <strong>${esc(item.camera_name)} — ${esc(kindTitle[item.kind] || item.kind)}</strong><p>${esc(item.message)}</p><small>${fmtTime(item.created_at)}</small></div></div>`).join('')
@@ -296,7 +296,7 @@ async function renderDetectionConfig() {
         </label>
         <label class="toggle-item">
           <input type="checkbox" id="cfg-anomaly" ${cfg.anomaly_enabled ? 'checked' : ''} />
-          <span class="toggle-label"><strong>🧍 Anomaly (Pose)</strong><br><small>Fall detection, loitering, unusual poses</small></span>
+          <span class="toggle-label"><strong>🧍 Anomaly (Pose)</strong><br><small>Pose-based fall checks (not a trained action classifier)</small></span>
         </label>
         <label class="toggle-item">
           <input type="checkbox" id="cfg-object" ${cfg.object_enabled ? 'checked' : ''} />
@@ -393,7 +393,20 @@ async function runUploadedVideoTest(event) {
     let data = {}; try { data = await response.json(); } catch {}
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
     const rows = Object.entries(data.events || {});
-    results.innerHTML = `<h3>Analysis complete</h3><div class="test-summary-grid"><div><b>${data.frames_analyzed}</b><small>Frames analysed</small></div><div><b>${data.duration_seconds}s</b><small>Video duration</small></div><div><b>50%</b><small>Minimum confidence</small></div></div><h4>Detection candidates</h4>${rows.length ? rows.map(([kind,count])=>`<div class="test-event-row"><span>${esc(kind.replaceAll('_',' '))}</span><b>${count}</b></div>`).join('') : '<p class="muted small">No detections met the configured confidence threshold.</p>'}<h4>Alarm confirmation</h4><p>${data.confirmed_alert_types?.length ? data.confirmed_alert_types.map(esc).join(', ') : 'No repeated event reached the local alarm confirmation rule.'}</p><p class="field-hint">${esc(data.early_warning_note || '')}</p><a class="outline-btn" href="${esc(data.annotated_video_url)}" target="_blank" rel="noopener">Open annotated video</a>`;
+    const unavailable = Object.entries(data.models_loaded || {}).filter(([, loaded]) => !loaded).map(([name]) => name);
+    const diagnostics = data.fire_detector || {};
+    const notices = (data.warnings || []).map(note => `<p class="field-hint">⚠ ${esc(note)}</p>`).join('');
+    const photos = (data.confirmed_events || []).filter(e => e.snapshot_url);
+    results.innerHTML = `<h3>Analysis complete</h3>
+      <div class="test-summary-grid"><div><b>${data.frames_analyzed}</b><small>Frames analysed</small></div><div><b>${data.duration_seconds}s</b><small>Video duration</small></div><div><b>${Math.round(data.minimum_confidence * 100)}%</b><small>Alert confidence floor</small></div></div>
+      <p>Fire detector: <strong>${esc(diagnostics.status || 'unknown')}</strong> · ${diagnostics.successful_frames || 0} frames evaluated · classes: ${esc((diagnostics.enabled_labels || []).join(', ') || 'none')}.</p>
+      ${notices}
+      <h4>Qualified detection frames</h4>${rows.length ? rows.map(([kind,count])=>`<div class="test-event-row"><span>${esc(kind.replaceAll('_',' '))}</span><b>${count}</b></div>`).join('') : '<p class="muted small">No event with genuine model confidence ≥50% was detected.</p>'}
+      <h4>Confirmed unusual incidents</h4><p>${data.confirmed_alert_types?.length ? data.confirmed_alert_types.map(esc).join(', ') : 'No event was confirmed on 2+ analysed frames.'}</p>
+      ${photos.length ? `<h4>Saved incident photos (${photos.length})</h4><div class="test-event-photos">${photos.map(e=>`<figure><a href="${esc(e.snapshot_url)}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(e.snapshot_url)}" alt="${esc(e.kind)} incident photo"></a><figcaption>${esc(e.kind.replaceAll('_',' '))} · ${Math.round(e.confidence*100)}% · ${e.time_seconds}s</figcaption></figure>`).join('')}</div>` : ''}
+      <p class="field-hint">Only confirmed unusual incident photos are saved. The full annotated video remains available for reviewing all frames.</p>
+      ${unavailable.length ? `<p>Models unavailable: ${unavailable.map(esc).join(', ')}.</p>` : ''}
+      <a class="outline-btn" href="${esc(data.annotated_video_url)}" target="_blank" rel="noopener">Open annotated video</a>`;
     results.classList.remove('hidden');
     output.src = data.annotated_video_url; output.classList.remove('hidden');
     toast('Video analysis completed.');

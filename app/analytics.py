@@ -9,11 +9,17 @@ from time import monotonic
 
 
 def point_in_polygon(point, polygon):
-    x, y = point
+    try:
+        x, y = point
+    except (ValueError, TypeError):
+        return False
     inside = False
     for i in range(len(polygon)):
-        x1, y1 = polygon[i - 1]
-        x2, y2 = polygon[i]
+        try:
+            x1, y1 = polygon[i - 1]
+            x2, y2 = polygon[i]
+        except (ValueError, TypeError, IndexError):
+            continue
         if (y1 > y) != (y2 > y):
             cross_x = (x2 - x1) * (y - y1) / (y2 - y1) + x1
             if x < cross_x:
@@ -25,7 +31,10 @@ def crossing_direction(previous, current, line):
     """Return entry/exit if a person's motion crosses a *finite* directed line."""
     if len(line) != 2 or previous == current:
         return None
-    (ax, ay), (bx, by) = line
+    try:
+        (ax, ay), (bx, by) = line
+    except (ValueError, TypeError):
+        return None
     dx, dy = bx - ax, by - ay
     if dx * dx + dy * dy < 1e-8 or hypot(current[0]-previous[0], current[1]-previous[1]) > 0.35:
         return None
@@ -56,8 +65,25 @@ class TrackState:
 
 class Analytics:
     def __init__(self, zone=None, tripwire=None, cooldown=20):
-        self.zone = zone or []
-        self.tripwire = tripwire or []
+        # Validate and sanitize zone: keep only valid [x, y] pairs, need at least 3 for polygon
+        if isinstance(zone, list):
+            self.zone = [p for p in zone if isinstance(p, (list, tuple)) and len(p) == 2]
+            if len(self.zone) < 3:
+                self.zone = []
+        else:
+            self.zone = []
+        
+        # Validate and sanitize tripwire: must be exactly 2 points, each [x, y]
+        if isinstance(tripwire, list) and len(tripwire) == 2:
+            p1, p2 = tripwire[0], tripwire[1]
+            if (isinstance(p1, (list, tuple)) and len(p1) == 2 and
+                isinstance(p2, (list, tuple)) and len(p2) == 2):
+                self.tripwire = [p1, p2]
+            else:
+                self.tripwire = []
+        else:
+            self.tripwire = []
+        
         self.cooldown = cooldown
         self.tracks: dict[int, TrackState] = {}
         self.frame_number = 0

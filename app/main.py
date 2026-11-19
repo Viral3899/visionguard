@@ -10,6 +10,7 @@ import hmac
 import io
 import logging
 import re
+from anyio import to_thread
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -19,9 +20,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .config import settings
+from .config import local_model_path, settings
 from .database import Database
-from .engine import CameraManager, EventBus
+from .engine import CameraManager, CameraWorker, EventBus
 from .schemas import CameraCreate, CameraUpdate
 from .alerts import AlertManager
 
@@ -96,6 +97,13 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
     
     secret = settings.session_secret.encode('utf-8')
     admin_password = settings.admin_password or settings.dashboard_password
+
+    if admin_password.startswith('CHANGE_THIS'):
+        raise RuntimeError('Replace the example administrator password before starting.')
+    if settings.host not in {'localhost', '127.0.0.1', '::1'} and not admin_password:
+        raise RuntimeError('Set ADMIN_PASSWORD before binding to a network interface.')
+    if not secret or secret.startswith((b'CHANGE_THIS', b'change-this-visionguard-secret')):
+        secret = secrets.token_bytes(32)
 
     def make_session(user_id, role, client_id=None):
         payload = json.dumps({'sub': user_id, 'role': role, 'client_id': client_id, 'exp': int(time.time()) + 86400}, separators=(',', ':')).encode()
@@ -246,7 +254,7 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
             import cv2
             found = []
             for index in range(8):
-                cap = cv2.VideoCapture(index, cv2.CAP_DSHOW) if hasattr(cv2, 'CAP_DSHOW') else cv2.VideoCapture(index)
+                cap = CameraWorker._capture(str(index))
                 try:
                     if cap.isOpened():
                         ok, frame = cap.read()
@@ -269,8 +277,7 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
             raise HTTPException(422, str(exc))
         def probe():
             import cv2
-            value = int(source) if source.isdecimal() else source
-            cap = cv2.VideoCapture(value, cv2.CAP_DSHOW) if source.isdecimal() and hasattr(cv2, 'CAP_DSHOW') else cv2.VideoCapture(value)
+            cap = CameraWorker._capture(source)
             try:
                 if not cap.isOpened():
                     return {'ok': False, 'message': 'Source could not be opened. Check camera permissions, RTSP URL, network and stream credentials.'}
@@ -367,15 +374,28 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
         return {'camera_id': camera_id, 'source_configured': bool(camera.get('source')), 'telemetry': manager.telemetry(camera_id),
                 'stream_url': f'/stream/{camera_id}', 'message': 'Connection attempt restarted; check status and live preview.'}
 
+    upload_slot = asyncio.Lock()
+
+    def video_output(directory, token, user):
+        owner = str(user.get('client_id') or 'admin').encode()
+        prefix = hashlib.sha256(owner).hexdigest()
+        return directory / f'{prefix}_{token}_annotated.mp4'
+
     @app.post('/api/test-videos')
     async def test_uploaded_video(request: Request, file: UploadFile = File(...)):
         """Run an uploaded local test clip through the same on-device detectors.
 
         This is a diagnostic workflow: it returns an annotated MP4 and a summary.
-        Video analysis can produce local TTS alerts. Telegram is sent only when the
-        event is suspicious, has confidence strictly above 75%, and Telegram is configured.
+        Telegram is sent only for confirmed unusual events scoring >=50%,
+        and only when Telegram is configured. No loitering or normal-frame stills.
         """
         user = require_user(request)
+        if upload_slot.locked():
+            raise HTTPException(429, 'Another clip is being analysed. Retry after it finishes.')
+        async with upload_slot:
+            return await process_upload(user, file)
+
+    async def process_upload(user, file):
         allowed = {'.mp4', '.avi', '.mov', '.mkv', '.webm', '.m4v'}
         suffix = Path(file.filename or '').suffix.lower()
         if suffix not in allowed:
@@ -384,7 +404,7 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
         test_dir.mkdir(parents=True, exist_ok=True)
         token = secrets.token_hex(12)
         input_path = test_dir / f'{token}{suffix}'
-        output_path = test_dir / f'{token}_annotated.mp4'
+        output_path = video_output(test_dir, token, user)
         max_bytes = 250 * 1024 * 1024
         size = 0
         try:
@@ -407,34 +427,80 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
             import cv2
             from collections import defaultdict
             from .detectors import DetectionManager
-            from .engine import event_meets_confidence_floor
             from .alerts import AlertEvent
+            from .incidents import IncidentTracker, eligible_event, draw_event_box
+            
+            # === VIDEO PROPERTIES LOGGING ===
             cap = cv2.VideoCapture(str(input_path))
             if not cap.isOpened():
                 raise RuntimeError('Uploaded file could not be decoded by OpenCV. Try MP4 (H.264) format.')
+            
+            # Get video properties
             fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-            fps = min(max(float(fps), 1.0), 60.0)
+            fps = float(fps) if 0 < fps < float('inf') else 25.0
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 360)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps if fps > 0 else 0
+            fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+            fourcc_str = "".join([chr((fourcc >> 8 * i) & 0xFF) for i in range(4)])
+            
+            LOGGER.info(f"=== VIDEO UPLOAD ANALYSIS STARTED ===")
+            LOGGER.info(f"File: {file.filename} ({size} bytes)")
+            LOGGER.info(f"Video Properties: {width}x{height}, {fps:.2f} FPS, {total_frames} frames, {duration:.2f}s duration, Codec: {fourcc_str}")
+            LOGGER.info(f"Frame skip setting: {settings.frame_skip} (process every {settings.frame_skip} frame(s))")
+            LOGGER.info("Upload incident score floor: %.0f%%; 2+ analyzed frames", settings.incident_min_confidence * 100)
+            LOGGER.info("Upload alert channels: TTS configured=%s, Telegram configured=%s", settings.tts_enabled, bool(settings.telegram_bot_token and settings.telegram_chat_id))
+            
             if width <= 0 or height <= 0:
                 cap.release(); raise RuntimeError('Video has invalid dimensions.')
+            
             writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
             if not writer.isOpened():
                 cap.release(); raise RuntimeError('Could not create annotated MP4 output.')
 
-            detectors = DetectionManager()
+            try:
+                detectors = DetectionManager()
+            except Exception:
+                cap.release()
+                writer.release()
+                raise
+            # One missing specialist must not stop the other detectors. However,
+            # never return "analysis complete: zero detections" when all models
+            # are missing -- this is a setup error, not a negative test result.
+            if not any((detectors.fire_detector.status == 'ready',
+                        detectors.violence_detector.model is not None,
+                        getattr(getattr(detectors, 'weapon_detector', None), 'model', None) is not None,
+                        getattr(detectors.anomaly_detector, 'model', None) is not None,
+                        detectors.object_detector.model is not None)):
+                cap.release()
+                writer.release()
+                output_path.unlink(missing_ok=True)
+                raise RuntimeError('No detection models are ready. Install fire/smoke and/or security specialist weights and run verify_models.py.')
+            # Video testing emphasizes recall. Real-time cameras use configurable
+            # sampling rates to balance accuracy against capture latency.
+            detectors.object_every_n_frames = 1
+            detectors.violence_every_n_frames = 1
+            detectors.anomaly_every_n_frames = 1
+            if getattr(detectors, 'weapon_detector', None) is not None:
+                detectors.weapon_every_n_frames = 1
             person_model = None
             try:
                 from ultralytics import YOLO
-                person_model = YOLO(settings.model_path)
+                person_model = YOLO(local_model_path(settings.model_path))
+                LOGGER.info(f"Person tracking model loaded: {settings.model_path}")
             except Exception as exc:
                 LOGGER.warning('Person tracker unavailable for uploaded video: %s', exc)
 
-            # The camera configuration is intentionally local-only and has TTS on.
+            # Suppress local sirens during uploads; Telegram is still eligible
+            # for confirmed unusual activity when explicitly configured.
             test_config = {'fire_enabled': 1, 'violence_enabled': 1, 'anomaly_enabled': 1,
-                           'object_enabled': 1, 'tts_enabled': 1}
-            seen = defaultdict(int)
+                           'object_enabled': 1, 'tts_enabled': 0, 'telegram_enabled': 1}
+            incidents = IncidentTracker(settings.incident_min_confidence,
+                                        settings.incident_confirmation_frames,
+                                        max_missed_frames=1)
             emitted = set()
+            confirmed_records = []
             event_counts = defaultdict(int)
             max_frames = 12000
             frame_index = 0
@@ -451,14 +517,24 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
                     use_half = True
             except Exception:
                 pass
+            
+            # Frame analysis logging
+            frame_log_interval = max(1, int(fps * 5))  # Log every 5 seconds of video
+            LOGGER.info(f"Starting frame analysis (logging every {frame_log_interval} frames)...")
+            
             try:
                 while frame_index < max_frames:
                     ok, frame = cap.read()
                     if not ok or frame is None:
+                        LOGGER.info(f"End of video reached at frame {frame_index}")
                         break
                     frame_index += 1
-                    if frame_index % max(1, settings.frame_skip) != 0:
-                        writer.write(frame); continue
+                    
+                    # Log video progress periodically
+                    if frame_index % frame_log_interval == 0:
+                        progress_pct = (frame_index / max(total_frames, 1)) * 100
+                        LOGGER.info(f"Progress: frame {frame_index}/{total_frames} ({progress_pct:.1f}%), analyzed: {processed}, events so far: {dict(event_counts)}")
+                    
                     tracks = []
                     if person_model is not None:
                         try:
@@ -475,44 +551,101 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
                                                    'foot': ((box[0]+box[2])/2/frame.shape[1], box[3]/frame.shape[0])})
                         except Exception as exc:
                             LOGGER.debug('Test video person tracking frame failed: %s', exc)
-                    frame_events = detectors.process_frame(frame, tracks, 'uploaded-video-test', test_config) or []
-                    frame_events = [e for e in frame_events if isinstance(e, dict) and event_meets_confidence_floor(e, .30)]
+                    
+                    frame_events = detectors.process_frame(frame, tracks, 'uploaded-video-test', test_config, timestamp=(frame_index - 1) / fps) or []
+                    
+                    # Only real model detections at/above the policy threshold
+                    # are eligible. No loitering, proximity, regular frames or
+                    # inflated smoke confidence can reach the alert channels.
+                    frame_events = [e for e in frame_events
+                                    if eligible_event(e, settings.incident_min_confidence)]
                     for event in frame_events:
-                        kind = str(event.get('type', 'unknown'))
-                        event_counts[kind] += 1
-                        # Require recurrence on separate processed frames before sounding alarm.
-                        seen[kind] += 1
-                        if seen[kind] >= 2 and kind not in emitted:
-                            emitted.add(kind)
-                            alert = AlertEvent(event_id=token + kind, camera_id='uploaded-video-test',
-                                camera_name='Uploaded video test', kind=kind,
-                                severity=event.get('severity', 'medium'),
-                                message=event.get('message', f'{kind} detected in uploaded video'),
-                                timestamp=time.strftime('%Y-%m-%d %H:%M:%S'))
-                            alert_manager.process_event(alert, test_config)
-                        box = event.get('bbox')
-                        if box and len(box) == 4:
-                            x1,y1,x2,y2 = [int(float(v) * (frame.shape[1] if i % 2 == 0 else frame.shape[0])) for i,v in enumerate(box)]
-                            cv2.rectangle(frame,(x1,y1),(x2,y2),(0,0,255),2)
-                        cv2.putText(frame, f"{kind.upper()} {float(event.get('confidence',0)):.0%}", (16, 34 + (len(event_counts)%8)*25),
-                                    cv2.FONT_HERSHEY_SIMPLEX,.65,(0,0,255),2)
+                        event_counts[event['type']] += 1
+                        draw_event_box(frame, event)
+                    for event in incidents.update(frame_events, (frame_index - 1) / fps):
+                        kind = event['type']
+                        confidence = float(event['confidence'])
+                        emitted.add(kind)
+                        from uuid import uuid4
+                        snapshot_name = uuid4().hex + '.jpg'
+                        # Private per-user test snapshots with a dedicated URL.
+                        prefix = video_output(test_dir, token, user).stem.removesuffix('_annotated')
+                        snapshot_path = test_dir / f'{prefix}_{snapshot_name}'
+                        snapshot_frame = draw_event_box(frame.copy(), event)
+                        if not cv2.imwrite(str(snapshot_path), snapshot_frame):
+                            snapshot_name = None
+                        snapshot_url = (f'/api/test-videos/{token}/snapshots/{snapshot_name}'
+                                        if snapshot_name else None)
+                        confirmed_records.append({
+                            'kind': kind, 'confidence': confidence,
+                            'message': event.get('message', f'{kind} detected in uploaded video'),
+                            'frame': frame_index,
+                            'time_seconds': round((frame_index - 1) / fps, 2),
+                            'bbox': event.get('bbox'),
+                            'snapshot': snapshot_name,
+                            'snapshot_url': snapshot_url
+                        })
+                        alert = AlertEvent(event_id=token + uuid4().hex, camera_id='uploaded-video-test',
+                            camera_name='Uploaded video test', kind=kind,
+                            severity=event.get('severity', 'high'),
+                            message=event.get('message', f'{kind} detected in uploaded video'),
+                            snapshot=snapshot_frame,
+                            metadata={'confidence': confidence},
+                            timestamp=time.strftime('%Y-%m-%d %H:%M:%S'))
+                        alert_manager.process_event(alert, test_config)
+                        LOGGER.warning('CONFIRMED INCIDENT: %s (%.0f%%) on frame %d', kind, 100 * confidence, frame_index)
                     writer.write(frame)
                     processed += 1
             finally:
                 cap.release(); writer.release()
+            
+            LOGGER.info(f"=== VIDEO ANALYSIS COMPLETE ===")
+            LOGGER.info(f"Total frames read: {frame_index}, Frames analyzed: {processed}")
+            LOGGER.info(f"Event counts: {dict(event_counts)}")
+            LOGGER.info(f"Confirmed alerts (2+ detections): {sorted(emitted)}")
+            LOGGER.info(f"Early warning note: Smoke/heat indicators are treated as early-warning clues. This model pipeline does not predict ignition with certainty.")
+            
             if frame_index == 0:
                 raise RuntimeError('The uploaded file contains no readable video frames.')
             return {'ok': True, 'filename': file.filename, 'size_bytes': size,
                     'frames_read': frame_index, 'frames_analyzed': processed,
                     'duration_seconds': round(frame_index / fps, 2),
-                    'minimum_confidence': 0.50,
+                    'minimum_confidence': settings.incident_min_confidence,
+                    'fire_detector': detectors.fire_detector.diagnostics(),
+                    'models_loaded': {
+                        'person': person_model is not None,
+                        'fire': detectors.fire_detector.model is not None,
+                        'violence': detectors.violence_detector.model is not None,
+                        'weapon_specialist': getattr(getattr(detectors, 'weapon_detector', None), 'model', None) is not None,
+                        'pose': getattr(detectors.anomaly_detector, 'model', None) is not None,
+                        'object': detectors.object_detector.model is not None,
+                    },
+                    'warnings': (["Fire/smoke model unavailable or unsupported; those detections could not be verified"]
+                                 if detectors.fire_detector.status != 'ready' else []) +
+                                (["Dedicated violence model is missing; fights not reliably classified"]
+                                 if detectors.violence_detector.model is None else []) +
+                                (["CS2 firearm specialist is missing; stock COCO may miss guns and small knives"]
+                                 if getattr(getattr(detectors, 'weapon_detector', None), 'model', None) is None else []) +
+                                (["The CS2 firearm model is trained on game weapons, not real-life knives or CCTV footage"]
+                                 if getattr(getattr(detectors, 'weapon_detector', None), 'model', None) is not None else []),
+                    'model_labels': {
+                        'violence': (detectors.violence_detector.model.names
+                                     if detectors.violence_detector.model is not None else {}),
+                        'weapon': (detectors.weapon_detector.model.names
+                                   if getattr(detectors, 'weapon_detector', None) is not None
+                                   and detectors.weapon_detector.model is not None else {}),
+                    },
+                    'model_sampling': {'fire_every_n_frames': 1, 'violence_every_n_frames': 1,
+                                       'weapon_every_n_frames': 1, 'object_every_n_frames': 1},
+                    'frame_limit_reached': frame_index == max_frames,
                     'events': dict(event_counts),
                     'confirmed_alert_types': sorted(emitted),
+                    'confirmed_events': confirmed_records,
                     'early_warning_note': 'Smoke/heat indicators are treated as early-warning clues. This model pipeline does not predict ignition with certainty.',
                     'annotated_video_url': f'/api/test-videos/{token}/annotated'}
 
         try:
-            result = await asyncio.to_thread(analyze)
+            result = await to_thread.run_sync(analyze)
             return result
         except HTTPException:
             raise
@@ -524,30 +657,36 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
 
     @app.get('/api/test-videos/{token}/annotated')
     async def get_annotated_test_video(token: str, request: Request):
-        require_user(request)
+        user = require_user(request)
         if not re.fullmatch(r'[0-9a-f]{24}', token):
             raise HTTPException(404, 'Video not found')
-        path = settings.data_dir / 'test_videos' / f'{token}_annotated.mp4'
+        directory = settings.data_dir / 'test_videos'
+        path = video_output(directory, token, user)
+        if user['role'] == 'admin' and not path.exists():
+            path = directory / f'{token}_annotated.mp4'  # Legacy unscoped output
         if not path.is_file():
             raise HTTPException(404, 'Annotated video not found')
         return FileResponse(path, media_type='video/mp4', filename='visionguard-test-annotated.mp4')
+
+    @app.get('/api/test-videos/{token}/snapshots/{filename}')
+    async def get_test_snapshot(token: str, filename: str, request: Request):
+        """User-scoped confirmed incident photos from uploaded video tests."""
+        user = require_user(request)
+        if not re.fullmatch(r'[0-9a-f]{24}', token) or not re.fullmatch(r'[0-9a-f]{32}\.jpg', filename):
+            raise HTTPException(404, 'Photo not found')
+        directory = settings.data_dir / 'test_videos'
+        prefix = video_output(directory, token, user).stem.removesuffix('_annotated')
+        path = directory / f'{prefix}_{filename}'
+        if not path.is_file():
+            raise HTTPException(404, 'Photo not found')
+        return FileResponse(path, media_type='image/jpeg', filename='incident.jpg')
 
     @app.get('/api/stats')
     async def stats(request: Request):
         user = require_user(request)
         cams = db.list_cameras()
         if user['role']=='client': cams=[c for c in cams if c.get('client_id')==user.get('client_id')]
-        allowed_ids={c['id'] for c in cams}
-        out = db.stats() if user['role']=='admin' else {'entered':0,'exited':0,'intrusions_24h':0,'events_by_kind_24h':{},'per_camera':{}}
-        if user['role']=='client':
-            events=db.events(limit=5000)
-            from datetime import datetime, timezone, timedelta
-            since=(datetime.now(timezone.utc)-timedelta(hours=24)).isoformat()
-            scoped=[e for e in events if e['camera_id'] in allowed_ids and e['created_at']>=since]
-            out['events_by_kind_24h']={k:sum(1 for e in scoped if e['kind']==k) for k in {e['kind'] for e in scoped}}
-            out['intrusions_24h']=sum(1 for e in scoped if e['kind']=='intrusion')
-            totals=db.stats(); out['per_camera']={k:v for k,v in totals['per_camera'].items() if k in allowed_ids}
-            out['entered']=sum(totals['per_camera'].get(k,{}).get('entered',0) for k in allowed_ids); out['exited']=sum(totals['per_camera'].get(k,{}).get('exited',0) for k in allowed_ids)
+        out = db.stats(client_id=user.get('client_id'))
         out.update(cameras=len(cams), online=sum(manager.telemetry(c['id'])['status']=='online' for c in cams),
                    current_people=sum(manager.telemetry(c['id'])['current_people'] for c in cams))
         return out
@@ -556,20 +695,19 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
     async def events(request: Request, camera_id: str | None = None, kind: str | None = None, limit: int = 80):
         valid_kinds = ('intrusion', 'entry', 'exit', 'fire_detected', 'smoke', 'heat_source',
                        'violence', 'weapon', 'fight', 'assault', 'proximity_alert',
-                       'fall_detected', 'loitering', 'test')
+                       'fall_detected', 'loitering', 'unusual_activity', 'test')
         if kind not in (None, *valid_kinds):
             raise HTTPException(422, 'Unknown event type')
         if not 1 <= limit <= 500:
             raise HTTPException(422, 'Limit must be 1..500')
         user=require_user(request)
-        records=db.events(camera_id=camera_id, kind=kind, limit=limit)
-        if user['role']=='client': records=[e for e in records if (db.get_camera(e['camera_id']) or {}).get('client_id')==user.get('client_id')]
+        records = db.events(camera_id=camera_id, kind=kind, limit=limit, client_id=user.get('client_id'))
         return records
 
     @app.get('/api/events.csv')
     async def export_csv(request: Request):
-        user=require_user(request); records = db.events(limit=5000)
-        if user['role']=='client': records=[e for e in records if (db.get_camera(e['camera_id']) or {}).get('client_id')==user.get('client_id')]
+        user = require_user(request)
+        records = db.events(limit=5000, client_id=user.get('client_id'))
         buffer = io.StringIO()
         writer = csv.DictWriter(buffer, fieldnames=['id', 'created_at', 'camera_id','camera_name','kind','track_id','message','snapshot','metadata'])
         writer.writeheader(); writer.writerows(records)
@@ -578,11 +716,10 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
 
     @app.get('/api/alert-log')
     async def alert_log(request: Request, event_id: str | None = None, limit: int = 100):
-        user=require_user(request); records=db.alert_log(event_id=event_id, limit=limit)
-        if user['role']=='client':
-            allowed={e['id'] for e in db.events(limit=5000) if (db.get_camera(e['camera_id']) or {}).get('client_id')==user.get('client_id')}
-            records=[r for r in records if r.get('event_id') in allowed]
-        return records
+        user = require_user(request)
+        if not 1 <= limit <= 500:
+            raise HTTPException(422, 'Limit must be 1..500')
+        return db.alert_log(event_id=event_id, limit=limit, client_id=user.get('client_id'))
 
     @app.get('/api/snapshots/{filename}')
     async def snapshot(filename: str, request: Request):
@@ -590,9 +727,8 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
         if not re.fullmatch(r'[0-9a-f]{32}\.jpg', filename): raise HTTPException(404)
         path = settings.data_dir / 'snapshots' / filename
         if not path.is_file(): raise HTTPException(404)
-        if user['role']=='client':
-            event=next((e for e in db.events(limit=5000) if e.get('snapshot')==filename),None)
-            if not event or (db.get_camera(event['camera_id']) or {}).get('client_id') != user.get('client_id'): raise HTTPException(404)
+        if user['role'] == 'client' and not db.client_owns_snapshot(user['client_id'], filename):
+            raise HTTPException(404)
         return FileResponse(path, media_type='image/jpeg')
 
     @app.get('/stream/{camera_id}')
@@ -655,7 +791,8 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=20)
                     if user['role']=='client':
-                        cam=db.get_camera(event.get('camera_id','')) if event.get('camera_id') else None
+                        camera_id = event.get('camera_id') or (event.get('event') or {}).get('camera_id')
+                        cam = db.get_camera(camera_id) if camera_id else None
                         if not cam or cam.get('client_id') != user.get('client_id'): continue
                     await websocket.send_json(event)
                 except asyncio.TimeoutError:
@@ -676,9 +813,9 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
         """Get all supported detection event types."""
         return {
             'core': ['intrusion', 'entry', 'exit'],
-            'fire': ['fire_detected', 'smoke', 'heat_source'],
-            'violence': ['violence', 'weapon', 'fight', 'assault', 'proximity_alert'],
-            'anomaly': ['fall_detected', 'loitering'],
+            'fire': ['fire_detected', 'smoke'],
+            'violence': ['violence', 'weapon', 'unusual_activity'],
+            'anomaly': ['fall_detected', 'unusual_activity'],
             'severity_levels': ['critical', 'high', 'medium', 'low']
         }
 
@@ -739,8 +876,6 @@ app = create_app()
 
 def run():
     import uvicorn
-    if settings.host not in ('127.0.0.1','localhost','::1') and not settings.dashboard_password:
-        raise SystemExit('Refusing non-local binding without DASHBOARD_PASSWORD in .env')
     uvicorn.run('app.main:app', host=settings.host, port=settings.port, reload=False)
 
 

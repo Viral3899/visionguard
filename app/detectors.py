@@ -10,7 +10,8 @@ from typing import Any
 import cv2
 import numpy as np
 
-from .config import settings
+from .config import local_model_path, settings
+from .security_labels import is_fight_label, weapon_class
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,21 +35,15 @@ class DetectionResult:
     classes: list[int]
     confidences: list[float]
     class_names: dict[int, str]
-    keypoints: list[list[float]] | None = None  # For pose detection
+    keypoints: list[list[float]] | None = None  # For pose detection: [person][keypoint][x,y]
+    keypoint_confs: list[list[float]] | None = None  # For pose detection: [person][keypoint] confidence
 
 
 class BaseDetector:
     """Base class for YOLO-based detectors."""
     
     def __init__(self, model_path: str, confidence: float, classes: tuple[int, ...] | None = None):
-        # Resolve model path relative to models directory if not absolute
-        from .config import settings
-        path = Path(model_path)
-        if not path.is_absolute():
-            # If path already starts with models/, don't prepend models_dir again
-            if not str(path).startswith('models' + os.sep) and not str(path).startswith('models/'):
-                path = settings.models_dir / path
-        self.model_path = str(path)
+        self.model_path = local_model_path(model_path)
         self.confidence = confidence
         self.classes = classes
         self.model = None
@@ -58,6 +53,8 @@ class BaseDetector:
     def _load_model(self):
         try:
             from ultralytics import YOLO
+            if not Path(self.model_path).is_file() and Path(self.model_path).parent != Path("."):
+                raise FileNotFoundError(self.model_path)
             self.model = YOLO(self.model_path)
             LOGGER.info(f"Loaded model: {self.model_path}")
         except Exception as e:
@@ -104,59 +101,40 @@ class BaseDetector:
             keypoints=keypoints
         )
     
-    def draw(self, frame: np.ndarray, result: DetectionResult, color: tuple = (0, 255, 0), 
-                thickness: int = 2, font_scale: float = 0.6) -> np.ndarray:
-        """Draw detection boxes with labels - improved to avoid text overlap."""
+    def draw(self, frame: np.ndarray, result: DetectionResult, color: tuple = (0, 255, 0),
+             thickness: int = 2, font_scale: float = 0.48) -> np.ndarray:
+        """Draw compact boxes with collision-aware labels kept inside the frame."""
         h, w = frame.shape[:2]
-        
+        occupied: list[tuple[int, int, int, int]] = []
         for box, cls, conf in zip(result.boxes, result.classes, result.confidences):
-            x1, y1, x2, y2 = map(int, box)
-            label = result.class_names.get(cls, str(cls))
-            
-            # Draw rounded rectangle for better visual
-            self._draw_rounded_rect(frame, (x1, y1), (x2, y2), color, thickness)
-            
-            # Prepare label text with background
-            label_text = f'{label} {conf:.0%}'
-            (text_w, text_h), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-            
-            # Position label above box, but ensure it's within frame
-            label_y = max(text_h + 5, y1 - 5)
-            label_x = max(0, min(x1, w - text_w - 10))
-            
-            # Draw label background (rounded)
-            padding = 6
-            bg_x1 = label_x - padding
-            bg_y1 = label_y - text_h - padding
-            bg_x2 = label_x + text_w + padding
-            bg_y2 = label_y + padding
-            
-            # Semi-transparent background
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            x1, x2 = max(0, min(w - 1, x1)), max(0, min(w - 1, x2))
+            y1, y2 = max(0, min(h - 1, y1)), max(0, min(h - 1, y2))
+            if x2 <= x1 or y2 <= y1:
+                continue
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, max(1, thickness), cv2.LINE_AA)
+            label = f"{result.class_names.get(cls, str(cls))} {conf:.0%}"
+            (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+            pad = 3
+            # Prefer a label just inside the top edge of its own box.
+            lx = max(0, min(w - tw - 2 * pad, x1))
+            candidates = [y1, y1 + th + 2 * pad, max(0, y1 - th - 2 * pad)]
+            ly = candidates[0]
+            for candidate in candidates:
+                rect = (lx, candidate, lx + tw + 2 * pad, candidate + th + 2 * pad)
+                if not any(not (rect[2] < a or rect[0] > c or rect[3] < b or rect[1] > d)
+                           for a, b, c, d in occupied):
+                    ly = candidate
+                    break
+            ly = max(0, min(h - th - 2 * pad, ly))
+            rect = (lx, ly, min(w - 1, lx + tw + 2 * pad), min(h - 1, ly + th + 2 * pad))
             overlay = frame.copy()
-            cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), color, -1)
-            cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
-            
-            # Draw label text
-            cv2.putText(frame, label_text, (label_x, label_y - 2),
-                       cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-        
+            cv2.rectangle(overlay, (rect[0], rect[1]), (rect[2], rect[3]), color, -1)
+            cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
+            cv2.putText(frame, label, (lx + pad, ly + th + pad - 1),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+            occupied.append(rect)
         return frame
-    
-    def _draw_rounded_rect(self, frame, pt1, pt2, color, thickness):
-        """Draw a rectangle with rounded corners."""
-        x1, y1 = pt1
-        x2, y2 = pt2
-        r = 8  # corner radius
-        
-        # Draw main rectangle
-        cv2.rectangle(frame, (x1 + r, y1), (x2 - r, y2), color, thickness)
-        cv2.rectangle(frame, (x1, y1 + r), (x2, y2 - r), color, thickness)
-        
-        # Draw four rounded corners
-        cv2.ellipse(frame, (x1 + r, y1 + r), (r, r), 180, 0, 90, color, thickness)
-        cv2.ellipse(frame, (x2 - r, y1 + r), (r, r), 270, 0, 90, color, thickness)
-        cv2.ellipse(frame, (x1 + r, y2 - r), (r, r), 90, 0, 90, color, thickness)
-        cv2.ellipse(frame, (x2 - r, y2 - r), (r, r), 0, 0, 90, color, thickness)
 
 
 class FireDetector(BaseDetector):
@@ -173,33 +151,59 @@ class FireDetector(BaseDetector):
         super().__init__(
             model_path=settings.fire_model_path,
             confidence=settings.fire_confidence,
-            classes=settings.fire_classes
+            # Do not filter by guessed class IDs: fire model class order varies by dataset.
+            classes=None
         )
-        # Default class names for fire models
-        self.fire_class_names = {0: 'fire', 1: 'smoke'}
+        self.status = 'model_unavailable'
+        self.inferences = 0
+        self.failures = 0
+        self.labels = []
+        if self.model is not None:
+            names = self.model.names
+            items = names.items() if isinstance(names, dict) else enumerate(names)
+            self.labels = [str(name).strip().lower() for index, name in items
+                           if not self.classes or int(index) in self.classes]
+            self.status = 'ready' if any(x in {'fire','flame','flames','smoke'} for x in self.labels) else 'unsupported_labels'
+            if self.status != 'ready':
+                LOGGER.error("Fire model has no supported labels among the enabled classes")
         # Track smoke detections for fire confirmation
         self.smoke_history: list[dict] = []
         self.max_smoke_age = 8.0  # seconds
         self.fire_history: list[float] = []
-        self.fire_confirm_frames = 1  # Reduced from 3 - single frame for small flames
+        self.fire_confirm_frames = 2
         self.fire_min_confidence = 0.40  # Reduced from 0.72 - lower threshold for small flames
         self.small_flame_min_confidence = 0.25  # Very low threshold for tiny flames (matchstick)
     
     def detect(self, frame: np.ndarray) -> DetectionResult | None:
-        result = super().detect(frame, settings.imgsz, settings.device)
-        if result:
-            # Merge with fire-specific class names
-            result.class_names = merge_fallback_names(result.class_names, self.fire_class_names)
+        if self.status != 'ready':
+            return None
+        # Higher inference resolution preserves small flame/smoke regions.
+        result = super().detect(frame, settings.fire_imgsz, settings.device)
+        if result is None:
+            self.failures += 1
+        else:
+            self.inferences += 1
         return result
-    
-    def check_fire_hazard(self, frame: np.ndarray, result: DetectionResult) -> list[dict]:
+
+    def diagnostics(self):
+        status = self.status
+        if status == 'ready':
+            if self.failures:
+                status = 'partial_failure' if self.inferences else 'inference_failed'
+            elif not self.inferences:
+                status = 'not_sampled'
+        return {'status': status, 'enabled_labels': self.labels,
+                'successful_frames': self.inferences, 'failed_frames': self.failures,
+                'confidence_threshold': self.confidence}
+
+    def check_fire_hazard(self, frame: np.ndarray, result: DetectionResult, now: float | None = None) -> list[dict]:
         """Check for fire hazards with smoke-first confirmation logic.
         
         Optimized for small flames (matchstick, candle, lighter) with lower thresholds.
         """
         hazards = []
         h, w = frame.shape[:2]
-        now = time.monotonic()
+        now = time.monotonic() if now is None else now
         
         # Clean old smoke history
         self.smoke_history = [s for s in self.smoke_history if now - s['time'] < self.max_smoke_age]
@@ -213,10 +217,10 @@ class FireDetector(BaseDetector):
         fire_boxes = []  # Track all fire boxes for size analysis
         
         for box, cls, conf in zip(result.boxes, result.classes, result.confidences):
-            class_name = result.class_names.get(cls, str(cls)).lower()
+            class_name = result.class_names.get(cls, str(cls)).strip().lower()
             x1, y1, x2, y2 = box
             
-            if class_name == 'smoke':
+            if class_name in {'smoke', 'smokes'}:
                 has_smoke = True
                 smoke_conf = max(smoke_conf, conf)
                 smoke_bbox = [x1/w, y1/h, x2/w, y2/h]
@@ -227,7 +231,7 @@ class FireDetector(BaseDetector):
                     'bbox': [x1/w, y1/h, x2/w, y2/h]
                 })
             
-            elif class_name == 'fire':
+            elif class_name in {'fire', 'flame', 'flames'}:
                 has_fire = True
                 fire_conf = max(fire_conf, conf)
                 fire_bbox = [x1/w, y1/h, x2/w, y2/h]
@@ -297,9 +301,9 @@ class FireDetector(BaseDetector):
             is_persistent = len(recent_smoke) >= 2
             
             severity = 'high' if is_persistent else 'medium'
+            # Repetition is useful for confirmation, but must NEVER inflate the
+            # model confidence over the 50% notification threshold.
             confidence = smoke_conf
-            if is_persistent:
-                confidence = min(0.9, smoke_conf + 0.1)  # Boost confidence for persistent smoke
             
             hazards.append({
                 'type': 'smoke',
@@ -312,37 +316,20 @@ class FireDetector(BaseDetector):
                 'smoke_count': len(recent_smoke)
             })
         
-        # Check for electrical hazards, flammable materials near heat sources
-        for box, cls, conf in zip(result.boxes, result.classes, result.confidences):
-            class_name = result.class_names.get(cls, str(cls)).lower()
-            x1, y1, x2, y2 = box
-            
-            if class_name in ('laptop', 'tv', 'microwave', 'oven', 'heater', 'candle'):
-                hazards.append({
-                    'type': 'heat_source',
-                    'severity': 'low',
-                    'class': class_name,
-                    'confidence': conf,
-                    'bbox': [x1/w, y1/h, x2/w, y2/h],
-                    'message': f'Heat source detected: {class_name}'
-                })
-        
         return hazards
 
 
 class ViolenceDetector(BaseDetector):
     """Violence/Fight/Weapon detection for home security."""
     
-    def __init__(self):
+    def __init__(self, model_path: str | None = None):
+        self.specialist = model_path is not None
         super().__init__(
-            model_path=settings.violence_model_path,
+            model_path=model_path or settings.violence_model_path,
             confidence=settings.violence_confidence
         )
-        # Common violence-related classes
-        self.violence_classes = {
-            0: 'fight', 1: 'assault', 2: 'weapon', 3: 'knife', 
-            4: 'gun', 5: 'violence', 6: 'aggression', 7: 'pistol', 8: 'rifle', 9: 'blade'
-        }
+        # Never guess violence class IDs: class 0 is often 'person'.
+        self.violence_classes = {}
         # Track weapon detections for home security
         self.weapon_history: dict[str, list[dict]] = {}  # track_id -> weapon detections
         # Lower threshold for knife specifically (knives are harder to detect)
@@ -350,7 +337,7 @@ class ViolenceDetector(BaseDetector):
         self.weapon_min_confidence = 0.30
     
     def detect(self, frame: np.ndarray) -> DetectionResult | None:
-        result = super().detect(frame, settings.imgsz, settings.device)
+        result = super().detect(frame, settings.violence_imgsz, settings.device)
         if result:
             result.class_names = merge_fallback_names(result.class_names, self.violence_classes)
         return result
@@ -368,10 +355,16 @@ class ViolenceDetector(BaseDetector):
         person_by_id = {t['id']: t for t in person_tracks} if person_tracks else {}
         
         for box, cls, conf in zip(result.boxes, result.classes, result.confidences):
-            class_name = result.class_names.get(cls, str(cls)).lower()
+            class_name = result.class_names.get(cls, str(cls)).strip().lower()
             x1, y1, x2, y2 = box
             
-            if class_name in ('fight', 'assault', 'violence', 'aggression'):
+            if class_name in ('unusual_activity', 'abnormal_activity', 'suspicious_activity'):
+                events.append({
+                    'type': 'unusual_activity', 'severity': 'high', 'subtype': class_name,
+                    'confidence': conf, 'bbox': [x1/w, y1/h, x2/w, y2/h],
+                    'message': f'{class_name.replace("_", " ").capitalize()} detected with {conf:.0%} confidence',
+                })
+            elif is_fight_label(class_name):
                 events.append({
                     'type': 'violence',
                     'severity': 'critical',
@@ -446,27 +439,43 @@ class ViolenceDetector(BaseDetector):
                     'home_security_alert': True
                 })
         
-        # Analyze person proximity for fight detection
-        if person_tracks and len(person_tracks) >= 2:
-            for i, track1 in enumerate(person_tracks):
-                for track2 in person_tracks[i+1:]:
-                    box1 = track1.get('bbox', [0, 0, 0, 0])
-                    box2 = track2.get('bbox', [0, 0, 0, 0])
-                    if box1[2] > box1[0] and box2[2] > box2[0]:
-                        cx1, cy1 = (box1[0] + box1[2]) / 2, (box1[1] + box1[3]) / 2
-                        cx2, cy2 = (box2[0] + box2[2]) / 2, (box2[1] + box2[3]) / 2
-                        dist = np.hypot(cx1 - cx2, cy1 - cy2)
-                        if dist < 0.15:
-                            events.append({
-                                'type': 'proximity_alert',
-                                'severity': 'medium',
-                                'subtype': 'close_proximity',
-                                'confidence': 0.6,
-                                'bbox': [min(box1[0], box2[0]), min(box1[1], box2[1]), 
-                                        max(box1[2], box2[2]), max(box1[3], box2[3])],
-                                'message': f'Close proximity between persons #{track1["id"]} and #{track2["id"]} (possible altercation)'
-                            })
-        
+        # Being close to another person is NORMAL. Do not manufacture a 60%
+        # fight-confidence score or create snapshots/alerts from proximity.
+        return events
+
+
+class SpecialistWeaponDetector(BaseDetector):
+    """Weapon specialist, including CS2 firearm labels without pretending they are knives.
+
+    Supports an alternative, user-supplied real knife checkpoint whose class names
+    are knife/blade/gun/etc. No guesswork for class IDs or negative/unknown labels.
+    """
+
+    def __init__(self):
+        super().__init__(settings.weapon_model_path, settings.weapon_confidence)
+
+    def detect(self, frame: np.ndarray) -> DetectionResult | None:
+        return super().detect(frame, settings.weapon_imgsz, settings.device)
+
+    @staticmethod
+    def analyze_weapons(frame: np.ndarray, result: DetectionResult) -> list[dict]:
+        events = []
+        h, w = frame.shape[:2]
+        for box, cls, conf in zip(result.boxes, result.classes, result.confidences):
+            raw_label = str(result.class_names.get(cls, str(cls))).strip()
+            subtype = weapon_class(raw_label)
+            if not subtype:
+                continue
+            x1, y1, x2, y2 = box
+            if x2 <= x1 or y2 <= y1:
+                continue
+            events.append({
+                'type': 'weapon', 'severity': 'critical', 'subtype': subtype,
+                'model_label': raw_label, 'confidence': float(conf),
+                'bbox': [max(0., x1/w), max(0., y1/h), min(1., x2/w), min(1., y2/h)],
+                'message': f'Weapon model detected {raw_label} ({conf:.0%})',
+                'source_model': 'specialist_weapon',
+            })
         return events
 
 
@@ -483,7 +492,7 @@ class AnomalyDetector:
     def _load_model(self):
         try:
             from ultralytics import YOLO
-            self.model = YOLO(settings.anomaly_model_path)
+            self.model = YOLO(local_model_path(settings.anomaly_model_path))
             LOGGER.info(f"Loaded pose model: {settings.anomaly_model_path}")
         except Exception as e:
             LOGGER.error(f"Failed to load pose model: {e}")
@@ -530,6 +539,7 @@ class AnomalyDetector:
         classes = []
         confidences = []
         keypoints = []
+        keypoint_confs = []
         
         if result.boxes is not None and len(result.boxes) > 0:
             boxes = result.boxes.xyxy.cpu().numpy().tolist()
@@ -538,13 +548,17 @@ class AnomalyDetector:
         
         if hasattr(result, 'keypoints') and result.keypoints is not None and result.keypoints.xy is not None:
             keypoints = result.keypoints.xy.cpu().numpy().tolist()
+            # Also get keypoint confidences if available
+            if result.keypoints.conf is not None:
+                keypoint_confs = result.keypoints.conf.cpu().numpy().tolist()
         
         return DetectionResult(
             boxes=boxes,
             classes=classes,
             confidences=confidences,
             class_names={0: 'person'},
-            keypoints=keypoints
+            keypoints=keypoints,
+            keypoint_confs=keypoint_confs
         )
     
     def _parse_world_results(self, result, person_tracks: list[dict]) -> DetectionResult:
@@ -580,7 +594,7 @@ class AnomalyDetector:
         if not pose_result.keypoints and pose_result.class_names:
             # This is a YOLO-World result - check detected classes directly
             for i, (box, cls, conf) in enumerate(zip(pose_result.boxes, pose_result.classes, pose_result.confidences)):
-                class_name = pose_result.class_names.get(cls, str(cls)).lower()
+                class_name = pose_result.class_names.get(cls, str(cls)).strip().lower()
                 x1, y1, x2, y2 = box
                 
                 # Map YOLO-World classes to event types
@@ -611,7 +625,7 @@ class AnomalyDetector:
                         'bbox': [x1/w, y1/h, x2/w, y2/h],
                         'message': f'Violence/fight detected with {conf:.0%} confidence'
                     })
-                elif class_name in ('knife', 'gun', 'weapon', 'pistol', 'rifle'):
+                elif class_name in ('knife', 'a person holding a knife', 'gun', 'a person holding a gun', 'weapon', 'pistol', 'rifle'):
                     events.append({
                         'type': 'weapon',
                         'severity': 'critical',
@@ -672,6 +686,9 @@ class AnomalyDetector:
         # COCO keypoint indices: 0=nose, 5=left_shoulder, 6=right_shoulder, 
         # 11=left_hip, 12=right_hip, 13=left_knee, 14=right_knee, 15=left_ankle, 16=right_ankle
         
+        # Get keypoint confidences for this frame
+        kpt_confs = pose_result.keypoint_confs if pose_result.keypoint_confs else []
+        
         for i, (kpts, box) in enumerate(zip(pose_result.keypoints, pose_result.boxes)):
             if i >= len(person_tracks):
                 continue
@@ -679,34 +696,65 @@ class AnomalyDetector:
             track_id = track['id']
             x1, y1, x2, y2 = box
             
-            # Fall detection: check if person is horizontal (shoulders/hips near same y as ankles)
+            # Get keypoint confidences for this person
+            person_kpt_confs = kpt_confs[i] if i < len(kpt_confs) else []
+            
+            # Fall detection: only reasonably horizontal poses; do not flag
+            # someone sitting, kneeling or bending down as a fall.
             if settings.enable_fall_detection and len(kpts) >= 17:
-                nose_y = kpts[0][1] if kpts[0][2] > 0.3 else None  # confidence > 0.3
-                l_shoulder_y = kpts[5][1] if kpts[5][2] > 0.3 else None
-                r_shoulder_y = kpts[6][1] if kpts[6][2] > 0.3 else None
-                l_hip_y = kpts[11][1] if kpts[11][2] > 0.3 else None
-                r_hip_y = kpts[12][1] if kpts[12][2] > 0.3 else None
-                l_ankle_y = kpts[15][1] if kpts[15][2] > 0.3 else None
-                r_ankle_y = kpts[16][1] if kpts[16][2] > 0.3 else None
+                # Helper to get y coordinate with confidence check
+                def get_kpt_y(idx):
+                    if idx < len(kpts) and idx < len(person_kpt_confs):
+                        return kpts[idx][1] if person_kpt_confs[idx] > 0.3 else None
+                    return None
                 
-                # Average y positions
-                shoulder_y = np.nanmean([l_shoulder_y, r_shoulder_y])
-                hip_y = np.nanmean([l_hip_y, r_hip_y])
-                ankle_y = np.nanmean([l_ankle_y, r_ankle_y])
+                # Helper to compute nanmean safely (returns None if all values are None)
+                def safe_nanmean(values):
+                    valid = [v for v in values if v is not None]
+                    return np.nanmean(valid) if valid else None
+                
+                nose_y = get_kpt_y(0)
+                l_shoulder_y = get_kpt_y(5)
+                r_shoulder_y = get_kpt_y(6)
+                l_hip_y = get_kpt_y(11)
+                r_hip_y = get_kpt_y(12)
+                l_ankle_y = get_kpt_y(15)
+                r_ankle_y = get_kpt_y(16)
+                
+                # Average y positions (skip if both sides are None)
+                shoulder_y = safe_nanmean([l_shoulder_y, r_shoulder_y])
+                hip_y = safe_nanmean([l_hip_y, r_hip_y])
+                ankle_y = safe_nanmean([l_ankle_y, r_ankle_y])
+
+                def get_kpt_x(idx):
+                    if idx < len(kpts) and idx < len(person_kpt_confs):
+                        return kpts[idx][0] if person_kpt_confs[idx] > 0.3 else None
+                    return None
+                shoulder_x = safe_nanmean([get_kpt_x(5), get_kpt_x(6)])
+                hip_x = safe_nanmean([get_kpt_x(11), get_kpt_x(12)])
                 
                 if shoulder_y is not None and hip_y is not None and ankle_y is not None:
                     # Fallen: shoulders and hips are at similar height to ankles (horizontal body)
                     vertical_span = ankle_y - shoulder_y
                     hip_shoulder_diff = abs(hip_y - shoulder_y)
                     
-                    if vertical_span < h * 0.3 and hip_shoulder_diff < h * 0.15:
+                    horizontal = (shoulder_x is not None and hip_x is not None
+                                  and abs(hip_x - shoulder_x) > 1.25 * hip_shoulder_diff)
+                    if (horizontal and vertical_span < h * 0.3
+                            and hip_shoulder_diff < h * 0.15
+                            and (x2-x1) > (y2-y1) * 1.05):
                         self.fall_history[track_id] = self.fall_history.get(track_id, 0) + 1
                         if self.fall_history[track_id] >= 3:  # 3 consecutive frames
                             events.append({
                                 'type': 'fall_detected',
                                 'severity': 'high',
                                 'track_id': track_id,
-                                'confidence': 0.85,
+                                # Pose checkpoint provides confidence for a PERSON,
+                                # not for a FALL action. Never portray the person
+                                # score as a 50%+ verified fall classifier score.
+                                'confidence': None,
+                                'person_confidence': pose_result.confidences[i],
+                                'provisional_pose_heuristic': True,
                                 'bbox': [x1/w, y1/h, x2/w, y2/h],
                                 'message': f'Person #{track_id} fall detected'
                             })
@@ -769,7 +817,50 @@ class ObjectDetector(BaseDetector):
         )
     
     def detect(self, frame: np.ndarray) -> DetectionResult | None:
-        return super().detect(frame, settings.imgsz, settings.device)
+        full = super().detect(frame, settings.object_imgsz, settings.device)
+        if not settings.knife_tile_scan or full is None or self.model is None:
+            return full
+        # Optional high-recall scan: crop overlapping quadrants so a tiny knife
+        # occupies more input pixels. Costs ~4 additional model passes.
+        h, w = frame.shape[:2]
+        if h < 240 or w < 240:
+            return full
+        cut_x, cut_y = w // 2, h // 2
+        overlap_x, overlap_y = w // 10, h // 10
+        crops = [
+            (0, 0, min(w, cut_x + overlap_x), min(h, cut_y + overlap_y)),
+            (max(0, cut_x - overlap_x), 0, w, min(h, cut_y + overlap_y)),
+            (0, max(0, cut_y - overlap_y), min(w, cut_x + overlap_x), h),
+            (max(0, cut_x - overlap_x), max(0, cut_y - overlap_y), w, h),
+        ]
+        all_boxes, all_classes, all_confs = list(full.boxes), list(full.classes), list(full.confidences)
+        for left, top, right, bottom in crops:
+            cropped = super().detect(frame[top:bottom, left:right], settings.object_imgsz, settings.device)
+            if cropped is None:
+                continue
+            for box, cls, conf in zip(cropped.boxes, cropped.classes, cropped.confidences):
+                all_boxes.append([box[0] + left, box[1] + top, box[2] + left, box[3] + top])
+                all_classes.append(cls)
+                all_confs.append(conf)
+        # Remove duplicated boxes from overlapping crops (class-aware NMS).
+        keep = []
+        for i in sorted(range(len(all_boxes)), key=lambda k: all_confs[k], reverse=True):
+            a = all_boxes[i]
+            area_a = max(0, a[2]-a[0]) * max(0, a[3]-a[1])
+            duplicate = False
+            for j in keep:
+                if all_classes[j] != all_classes[i]:
+                    continue
+                b = all_boxes[j]
+                intersection = max(0, min(a[2], b[2]) - max(a[0], b[0])) * max(0, min(a[3], b[3]) - max(a[1], b[1]))
+                area_b = max(0, b[2]-b[0]) * max(0, b[3]-b[1])
+                if intersection / max(1, area_a + area_b - intersection) >= 0.45:
+                    duplicate = True
+                    break
+            if not duplicate:
+                keep.append(i)
+        return DetectionResult([all_boxes[i] for i in keep], [all_classes[i] for i in keep],
+                               [all_confs[i] for i in keep], full.class_names)
 
 
 class DetectionManager:
@@ -778,6 +869,11 @@ class DetectionManager:
     def __init__(self):
         self.fire_detector = FireDetector()
         self.violence_detector = ViolenceDetector()
+        # Only construct the specialist if the checkpoint exists; otherwise report
+        # unavailable rather than pretending the standard person model sees guns.
+        weapon_path = local_model_path(settings.weapon_model_path)
+        self.weapon_detector = (SpecialistWeaponDetector()
+                                if Path(weapon_path).is_file() else None)
         self.anomaly_detector = AnomalyDetector()
         self.object_detector = ObjectDetector()
         self._last_telegram_alert: dict[str, float] = {}
@@ -785,31 +881,45 @@ class DetectionManager:
         # Frame counters for running detectors at different frequencies
         self._frame_counter = 0
         # Run heavy detectors every N frames for performance
-        self.fire_every_n_frames = 1    # Every frame (fire is critical)
-        self.violence_every_n_frames = 1  # Every frame (violence is critical)
-        self.anomaly_every_n_frames = 2   # Every 2 frames (falls/loitering less urgent)
-        self.object_every_n_frames = 5    # Every 5 frames (general objects least urgent)
+        self.fire_every_n_frames = 1    # Fire/smoke is safety-critical: sample every processed frame
+        self.violence_every_n_frames = settings.violence_every_n_frames
+        self.weapon_every_n_frames = settings.weapon_every_n_frames
+        self.anomaly_every_n_frames = 5   # Run pose/open-vocabulary less often
+        self.object_every_n_frames = settings.object_every_n_frames
     
+    @staticmethod
+    def _filter_result(result: DetectionResult, allowed: set[str]) -> DetectionResult:
+        keep = [i for i, cls in enumerate(result.classes)
+                if str(result.class_names.get(cls, str(cls))).strip().lower() in allowed]
+        return DetectionResult(
+            boxes=[result.boxes[i] for i in keep],
+            classes=[result.classes[i] for i in keep],
+            confidences=[result.confidences[i] for i in keep],
+            class_names=result.class_names,
+        )
+
     def process_frame(self, frame: np.ndarray, person_tracks: list[dict], 
-                      camera_id: str, camera_config: dict) -> list[dict]:
+                      camera_id: str, camera_config: dict, *, timestamp: float | None = None) -> list[dict]:
         """Run all enabled detectors and return events.
         
         Optimized: Runs detectors at different frequencies for better FPS.
         """
         all_events = []
-        now = time.monotonic()
+        now = time.monotonic() if timestamp is None else timestamp
         self._frame_counter += 1
         
         # Fire detection - run every frame (critical)
         if camera_config.get('fire_enabled', 1) and self._frame_counter % self.fire_every_n_frames == 0:
             fire_result = self.fire_detector.detect(frame)
             if fire_result:
-                hazards = self.fire_detector.check_fire_hazard(frame, fire_result)
+                hazards = self.fire_detector.check_fire_hazard(frame, fire_result, now)
                 for hazard in hazards:
                     hazard['camera_id'] = camera_id
                     all_events.append(hazard)
                 # Draw fire detections
-                frame = self.fire_detector.draw(frame, fire_result, (0, 0, 255))
+                fire_only = self._filter_result(fire_result, {'fire','flame','smoke'})
+                if fire_only.boxes:
+                    frame = self.fire_detector.draw(frame, fire_only, (0, 0, 255))
         
         # Violence detection - run every frame (critical)
         if camera_config.get('violence_enabled', 1) and self._frame_counter % self.violence_every_n_frames == 0:
@@ -822,10 +932,34 @@ class DetectionManager:
                 for event in violence_events:
                     event['camera_id'] = camera_id
                     all_events.append(event)
-                frame = self.violence_detector.draw(frame, violence_result, (255, 0, 255))
+                threat_result = self._filter_result(violence_result, {'fight','assault','violence','aggression','weapon','knife','gun','pistol','rifle','blade', 'unusual_activity','abnormal_activity','suspicious_activity'})
+                if threat_result.boxes:
+                    frame = self.violence_detector.draw(frame, threat_result, (255, 0, 255))
+
+        # Separately trained knife/weapon weights, when provided by the user.
+        # Unlike stock COCO, these can be trained on hand-held small knives.
+        if (self.weapon_detector is not None and camera_config.get('violence_enabled', 1)
+                and self._frame_counter % self.weapon_every_n_frames == 0):
+            specialist_result = self.weapon_detector.detect(frame)
+            if specialist_result is not None:
+                for event in self.weapon_detector.analyze_weapons(frame, specialist_result):
+                    event['camera_id'] = camera_id
+                    all_events.append(event)
+                shown_indices = [i for i, cls in enumerate(specialist_result.classes)
+                                 if weapon_class(specialist_result.class_names.get(cls, str(cls)))]
+                shown = DetectionResult(
+                    [specialist_result.boxes[i] for i in shown_indices],
+                    [specialist_result.classes[i] for i in shown_indices],
+                    [specialist_result.confidences[i] for i in shown_indices],
+                    specialist_result.class_names,
+                )
+                if shown.boxes:
+                    self.weapon_detector.draw(frame, shown, (255, 0, 255))
         
         # Anomaly detection (falls, loitering) - run every 2 frames
-        if camera_config.get('anomaly_enabled', 1) and self._frame_counter % self.anomaly_every_n_frames == 0:
+        if (camera_config.get('anomaly_enabled', 1)
+                and getattr(self.anomaly_detector, 'model', None) is not None
+                and self._frame_counter % self.anomaly_every_n_frames == 0):
             pose_result = self.anomaly_detector.detect(frame, person_tracks)
             if pose_result:
                 anomaly_events = self.anomaly_detector.analyze_anomalies(
@@ -833,19 +967,40 @@ class DetectionManager:
                 for event in anomaly_events:
                     event['camera_id'] = camera_id
                     all_events.append(event)
+                # YOLO-World produces detections but no pose keypoints. In that
+                # mode draw its true threat boxes, not just unlabelled video.
+                if not pose_result.keypoints and anomaly_events:
+                    from .incidents import draw_event_box, eligible_event
+                    for event in anomaly_events:
+                        if eligible_event(event, settings.incident_min_confidence):
+                            draw_event_box(frame, event)
                 # Draw pose keypoints
                 if pose_result.keypoints:
-                    frame = self._draw_keypoints(frame, pose_result.keypoints, pose_result.boxes)
+                    frame = self._draw_keypoints(frame, pose_result.keypoints, pose_result.boxes, pose_result.keypoint_confs)
         
         # Object detection - run every 5 frames (least critical)
         if camera_config.get('object_enabled', 1) and self._frame_counter % self.object_every_n_frames == 0:
             object_result = self.object_detector.detect(frame)
             if object_result:
-                frame = self.object_detector.draw(frame, object_result, (255, 255, 0))
+                # COCO class 43 is knife. Convert it to a normal event so the global
+                # 50% floor and the >75% Telegram policy apply consistently.
+                knife_result = self._filter_result(object_result, {'knife'})
+                h, w = frame.shape[:2]
+                for box, conf in zip(knife_result.boxes, knife_result.confidences):
+                    x1, y1, x2, y2 = box
+                    all_events.append({
+                        'type': 'weapon', 'severity': 'critical', 'subtype': 'knife',
+                        'confidence': conf,
+                        'bbox': [x1 / w, y1 / h, x2 / w, y2 / h],
+                        'camera_id': camera_id,
+                        'message': f'Knife detected with {conf:.0%} confidence'
+                    })
+                if knife_result.boxes:
+                    frame = self.object_detector.draw(frame, knife_result, (255, 255, 0))
         
         return all_events
     
-    def _draw_keypoints(self, frame: np.ndarray, keypoints: list, boxes: list) -> np.ndarray:
+    def _draw_keypoints(self, frame: np.ndarray, keypoints: list, boxes: list, keypoint_confs: list = None) -> np.ndarray:
         """Draw pose keypoints on frame."""
         h, w = frame.shape[:2]
         skeleton = [
@@ -854,13 +1009,20 @@ class DetectionManager:
             (11, 12), (11, 13), (13, 15), (12, 14), (14, 16)  # Legs
         ]
         
-        for kpts, box in zip(keypoints, boxes):
+        if keypoint_confs is None:
+            keypoint_confs = [[] for _ in keypoints]
+        
+        for i, (kpts, box) in enumerate(zip(keypoints, boxes)):
             if len(kpts) >= 17:
-                for i, (x, y, conf) in enumerate(kpts):
+                person_confs = keypoint_confs[i] if i < len(keypoint_confs) else []
+                for j, (x, y) in enumerate(kpts):
+                    conf = person_confs[j] if j < len(person_confs) else 0
                     if conf > 0.3:
                         cv2.circle(frame, (int(x), int(y)), 3, (0, 255, 255), -1)
                 for start, end in skeleton:
-                    if kpts[start][2] > 0.3 and kpts[end][2] > 0.3:
+                    start_conf = person_confs[start] if start < len(person_confs) else 0
+                    end_conf = person_confs[end] if end < len(person_confs) else 0
+                    if start_conf > 0.3 and end_conf > 0.3:
                         pt1 = (int(kpts[start][0]), int(kpts[start][1]))
                         pt2 = (int(kpts[end][0]), int(kpts[end][1]))
                         cv2.line(frame, pt1, pt2, (0, 255, 255), 2)

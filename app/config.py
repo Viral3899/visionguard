@@ -8,6 +8,16 @@ ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / '.env')
 
 
+def local_model_path(value: str) -> str:
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    for candidate in (ROOT / path, ROOT / 'models' / path):
+        if candidate.is_file():
+            return str(candidate)
+    return value
+
+
 def get_int(name: str, default: int, minimum: int = 0) -> int:
     val = int(os.getenv(name, str(default)))
     if val < minimum:
@@ -34,41 +44,55 @@ class Settings:
     device: str = os.getenv('DEVICE', 'auto')
     confidence: float = max(0.40, get_float('CONFIDENCE', 0.40, 0.0))
     detect_class_ids: tuple[int, ...] = tuple(int(n.strip()) for n in os.getenv('DETECT_CLASS_IDS', '0').split(',') if n.strip())
-    imgsz: int = get_int('IMGSZ', 480, 128)  # Reduced from 640 for faster inference
-    max_frame_width: int = get_int('MAX_FRAME_WIDTH', 640, 320)  # Reduced from 960
+    imgsz: int = get_int('IMGSZ', 416, 128)  # Reduced from 640 for faster inference
+    max_frame_width: int = get_int('MAX_FRAME_WIDTH', 960, 320)  # Reduced from 960
     frame_skip: int = get_int('FRAME_SKIP', 1, 1)  # Process every frame (was 2)
     jpeg_quality: int = get_int('JPEG_QUALITY', 70, 30)
     snapshot_retention_days: int = get_int('SNAPSHOT_RETENTION_DAYS', 30, 1)
     event_cooldown_seconds: int = get_int('EVENT_COOLDOWN_SECONDS', 20, 0)
+    # Only verified threat incidents produce stills and Telegram alerts.
+    incident_min_confidence: float = max(0.50, get_float('INCIDENT_MIN_CONFIDENCE', 0.50))
+    incident_confirmation_frames: int = get_int('INCIDENT_CONFIRMATION_FRAMES', 2, 1)
     
     # Fire Detection - optimized for small flames (matchstick, candle)
-    fire_model_path: str = os.getenv('FIRE_MODEL_PATH', 'models/yolov8n-fire.pt')
+    fire_model_path: str = os.getenv('FIRE_MODEL_PATH', 'models/yolov26-fire-smoke.pt')
     fire_confidence: float = max(0.30, get_float('FIRE_CONFIDENCE', 0.30, 0.0))  # Lowered from 0.50
+    fire_imgsz: int = get_int('FIRE_IMGSZ', 768, 128)
     fire_classes: tuple[int, ...] = tuple(int(n.strip()) for n in os.getenv('FIRE_CLASSES', '0,1').split(',') if n.strip())
     
     # Violence/Fight Detection
-    violence_model_path: str = os.getenv('VIOLENCE_MODEL_PATH', 'models/yolov8n-violence.pt')
-    violence_confidence: float = max(0.35, get_float('VIOLENCE_CONFIDENCE', 0.35, 0.0))  # Lowered from 0.50
+    violence_model_path: str = os.getenv('VIOLENCE_MODEL_PATH', 'models/fight-yolov8-nano.pt')
+    violence_confidence: float = max(0.20, get_float('VIOLENCE_CONFIDENCE', 0.30, 0.0))
+    violence_imgsz: int = get_int('VIOLENCE_IMGSZ', 768, 128)
+    violence_every_n_frames: int = get_int('VIOLENCE_EVERY_N_FRAMES', 2, 1)
+    # Optional trained weapon model (NOT included in the stock YOLO person model).
+    weapon_model_path: str = os.getenv('WEAPON_MODEL_PATH', 'models/cs2-yolo12-weapon-detection.pt')
+    weapon_confidence: float = max(0.20, get_float('WEAPON_CONFIDENCE', 0.30, 0.0))
+    weapon_imgsz: int = get_int('WEAPON_IMGSZ', 960, 128)
+    weapon_every_n_frames: int = get_int('WEAPON_EVERY_N_FRAMES', 2, 1)
     
     # Anomaly/Unusual Activity Detection - uses YOLO-World for open-vocabulary (knife, gun, etc.)
-    anomaly_model_path: str = os.getenv('ANOMALY_MODEL_PATH', 'models/yolov8s-world.pt')  # Changed from pose to YOLO-World
+    anomaly_model_path: str = os.getenv('ANOMALY_MODEL_PATH', 'yolov8n-pose.pt')
     anomaly_confidence: float = max(0.30, get_float('ANOMALY_CONFIDENCE', 0.30, 0.0))  # Lowered from 0.50
     enable_fall_detection: bool = os.getenv('ENABLE_FALL_DETECTION', 'true').lower() == 'true'
-    enable_loitering_detection: bool = os.getenv('ENABLE_LOITERING_DETECTION', 'true').lower() == 'true'
+    enable_loitering_detection: bool = False  # intentionally disabled; not an unusual incident
     loitering_time_seconds: int = get_int('LOITERING_TIME_SECONDS', 30, 5)
     # YOLO-World open vocabulary classes - includes weapons, fire, violence
-    yolo_world_classes: tuple[str, ...] = tuple(x.strip() for x in os.getenv('YOLO_WORLD_CLASSES', 'fire,smoke,person fighting,knife,gun,weapon,pistol,rifle,blade,person falling').split(',') if x.strip())
+    yolo_world_classes: tuple[str, ...] = tuple(x.strip() for x in os.getenv('YOLO_WORLD_CLASSES', 'fire,smoke,person fighting,knife,a person holding a knife,gun,a person holding a gun,weapon,pistol,rifle,blade,person falling').split(',') if x.strip())
     
     # General Object Detection (COCO classes)
     object_model_path: str = os.getenv('OBJECT_MODEL_PATH', 'yolov8n.pt')
     object_confidence: float = max(0.40, get_float('OBJECT_CONFIDENCE', 0.40, 0.0))
-    object_classes: tuple[int, ...] = tuple(int(n.strip()) for n in os.getenv('OBJECT_CLASSES', '').split(',') if n.strip())
+    object_imgsz: int = get_int('OBJECT_IMGSZ', 960, 128)
+    object_every_n_frames: int = get_int('OBJECT_EVERY_N_FRAMES', 3, 1)
+    knife_tile_scan: bool = os.getenv('KNIFE_TILE_SCAN', 'false').lower() == 'true'
+    object_classes: tuple[int, ...] = tuple(int(n.strip()) for n in os.getenv('OBJECT_CLASSES', '43').split(',') if n.strip())
     
     # Telegram Alerts
     telegram_bot_token: str = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
     telegram_chat_id: str = os.getenv('TELEGRAM_CHAT_ID', '').strip()
-    telegram_alert_types: tuple[str, ...] = tuple(x.strip().lower() for x in os.getenv('TELEGRAM_ALERT_TYPES', 'intrusion,fire,fire_detected,smoke,violence,weapon,knife,gun,fight,assault,fall_detected,loitering,proximity_alert,heat_source').split(',') if x.strip())
-    telegram_min_confidence: float = max(0.75, min(1.0, get_float('TELEGRAM_MIN_CONFIDENCE', 0.75, 0.0)))
+    telegram_alert_types: tuple[str, ...] = tuple(x.strip().lower() for x in os.getenv('TELEGRAM_ALERT_TYPES', 'fire_detected,smoke,violence,weapon,fall_detected,unusual_activity').split(',') if x.strip())
+    telegram_min_confidence: float = max(0.50, get_float('TELEGRAM_MIN_CONFIDENCE', 0.50))
     telegram_cooldown_seconds: int = get_int('TELEGRAM_COOLDOWN_SECONDS', 60, 0)
     
     # TTS Siren/Voice Alerts

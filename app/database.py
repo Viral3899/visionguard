@@ -1,7 +1,7 @@
 """SQLite persistence: WAL, short per-request connections, parameterized SQL."""
 import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
@@ -18,7 +18,7 @@ class Database:
 
     @contextmanager
     def connection(self):
-        with sqlite3.connect(str(self.path), timeout=10) as cx:
+        with closing(sqlite3.connect(str(self.path), timeout=10)) as cx, cx:
             cx.row_factory = sqlite3.Row
             cx.execute('PRAGMA journal_mode=WAL;')
             cx.execute('PRAGMA busy_timeout=10000;')
@@ -222,8 +222,11 @@ class Database:
                 cx.execute(f'UPDATE totals SET {col}={col}+1 WHERE camera_id=?', (camera_id,))
         return item
 
-    def events(self, camera_id=None, kind=None, limit=100):
+    def events(self, camera_id=None, kind=None, limit=100, client_id=None):
         terms, params = [], []
+        if client_id is not None:
+            terms.append('camera_id IN (SELECT id FROM cameras WHERE client_id=?)')
+            params.append(client_id)
         if camera_id:
             terms.append('camera_id=?'); params.append(camera_id)
         if kind:
@@ -242,21 +245,31 @@ class Database:
             result.append(item)
         return result
 
-    def stats(self):
+    def stats(self, client_id=None):
         since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        scope = 'camera_id IN (SELECT id FROM cameras WHERE client_id=?)'
+        params = () if client_id is None else (client_id,)
+        totals_query = 'SELECT * FROM totals'
+        events_query = 'SELECT kind, COUNT(*) AS n FROM events WHERE created_at>=?'
+        if client_id is not None:
+            totals_query += ' WHERE ' + scope
+            events_query += ' AND ' + scope
         with self.connection() as cx:
-            counts = cx.execute('SELECT COALESCE(SUM(entered),0) AS entered,COALESCE(SUM(exited),0) AS exited FROM totals').fetchone()
-            lastday = cx.execute('SELECT COUNT(*) AS n FROM events WHERE created_at>=? AND kind=?', (since, 'intrusion')).fetchone()
-            # Stats by event kind
-            kind_stats = cx.execute('SELECT kind, COUNT(*) as n FROM events WHERE created_at>=? GROUP BY kind', (since,)).fetchall()
-            per = {r['camera_id']: {'entered':r['entered'], 'exited':r['exited']} for r in cx.execute('SELECT * FROM totals')}
-        return {
-            'entered': counts['entered'], 
-            'exited': counts['exited'], 
-            'intrusions_24h': lastday['n'],
-            'events_by_kind_24h': {r['kind']: r['n'] for r in kind_stats},
-            'per_camera': per
-        }
+            per = {r['camera_id']: {'entered': r['entered'], 'exited': r['exited']}
+                   for r in cx.execute(totals_query, params)}
+            kinds = {r['kind']: r['n'] for r in cx.execute(
+                events_query + ' GROUP BY kind', (since, *params))}
+        return {'entered': sum(t['entered'] for t in per.values()),
+                'exited': sum(t['exited'] for t in per.values()),
+                'intrusions_24h': kinds.get('intrusion', 0),
+                'events_by_kind_24h': kinds, 'per_camera': per}
+
+    def client_owns_snapshot(self, client_id, filename):
+        with self.connection() as cx:
+            return cx.execute(
+                'SELECT 1 FROM events e JOIN cameras c ON c.id=e.camera_id '
+                'WHERE e.snapshot=? AND c.client_id=? LIMIT 1',
+                (filename, client_id)).fetchone() is not None
 
     def log_alert(self, event_id, channel, status, message=None):
         item = dict(id=uuid4().hex, event_id=event_id, channel=channel,
@@ -265,8 +278,11 @@ class Database:
         with self.lock, self.connection() as cx:
             cx.execute('INSERT INTO alert_log VALUES (?,?,?,?,?,?)', tuple(item.values()))
 
-    def alert_log(self, event_id=None, limit=100):
+    def alert_log(self, event_id=None, limit=100, client_id=None):
         terms, params = [], []
+        if client_id is not None:
+            terms.append('event_id IN (SELECT e.id FROM events e JOIN cameras c ON c.id=e.camera_id WHERE c.client_id=?)')
+            params.append(client_id)
         if event_id:
             terms.append('event_id=?'); params.append(event_id)
         query = 'SELECT * FROM alert_log' + (' WHERE ' + ' AND '.join(terms) if terms else '') + ' ORDER BY created_at DESC LIMIT ?'
@@ -283,6 +299,17 @@ class Database:
         for name in snapshots:
             if name and Path(name).name == name:
                 (settings.data_dir / 'snapshots' / name).unlink(missing_ok=True)
+
+        cutoff_time = datetime.fromisoformat(cutoff).timestamp()
+        # Expire user-scoped test photos along with annotated test videos.
+        for clip in (settings.data_dir / 'test_videos').glob('*'):
+            if clip.suffix.lower() not in ('.mp4', '.jpg') or not clip.is_file():
+                continue
+            try:
+                if clip.stat().st_mtime < cutoff_time:
+                    clip.unlink(missing_ok=True)
+            except FileNotFoundError:
+                continue
 
     def clear_all_data(self):
         """Clear all events, alert logs, and snapshots for a fresh start."""
