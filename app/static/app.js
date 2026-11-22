@@ -1,6 +1,6 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
-const state = { cameras: [], clients: [], selected: null, events: [], editMode: null, editPoints: [], socket: null, loggedIn: false, role: null, editingCamera: false, detectionTypes: {} };
+const state = { cameras: [], clients: [], selected: null, events: [], editMode: null, editPoints: [], socket: null, loggedIn: false, role: null, editingCamera: false, detectionTypes: {}, viewMode: 'grid', gridLayout: 'auto' };
 
 const kindTitle = {
   intrusion: 'Zone intrusion', entry: 'Person entered', exit: 'Person exited',
@@ -62,7 +62,7 @@ async function refreshCameras() {
   const cams = await req('/api/cameras');
   state.cameras = cams;
   if (!cams.some(c => c.id === state.selected)) state.selected = cams[0]?.id || null;
-  renderCameraList(); renderSelected(); renderDetectionConfig();
+  renderCameraList(); renderCameraGrid(); renderSelected(); renderDetectionConfig();
   if(state.role==='admin') loadClients().catch(()=>{});
   } catch (error) {
     container.innerHTML = `<div class="camera-load-error"><b>Could not load cameras</b><small>${esc(error.message)}</small><button class="outline-btn" id="retry-cameras">Retry</button></div>`;
@@ -81,6 +81,7 @@ function renderCameraList() {
     </button>`).join('');
   container.querySelectorAll('[data-cam]').forEach(btn => btn.onclick = () => {
     state.selected = btn.dataset.cam; resetEditor(); renderCameraList(); renderSelected(true); renderDetectionConfig();
+    switchToFocusView(btn.dataset.cam);
   });
 }
 
@@ -119,13 +120,309 @@ function renderSelected(force=false) {
         if (video.dataset.source !== next) return;
         video.classList.remove('hidden'); $('video-empty').classList.add('hidden');
         if (video.naturalWidth && video.naturalHeight) $('video-display').style.aspectRatio = `${video.naturalWidth} / ${video.naturalHeight}`;
+        ptzController.reset();
       };
       video.src = `/stream/${encodeURIComponent(next)}?v=${Date.now()}`;
-    } else { video.removeAttribute('src'); }
+    } else { video.removeAttribute('src'); ptzController.reset(); }
   }
   $('video-stamp').classList.toggle('hidden', !cam || !cam.enabled);
   renderDetectionBadges(cam);
 }
+
+function setViewMode(mode, cameraId=null) {
+  state.viewMode = mode;
+  if (cameraId) {
+    state.selected = cameraId;
+  }
+  const isGrid = mode === 'grid';
+  const gridSection = $('multi-camera-grid-section');
+  const workspaceGrid = $('workspace-grid');
+  const topBreadcrumb = $('breadcrumb-current');
+  const navGrid = $('nav-grid');
+  const navSingle = $('nav-single');
+
+  if (gridSection) gridSection.classList.toggle('hidden', !isGrid);
+  if (workspaceGrid) workspaceGrid.classList.toggle('hidden', isGrid);
+
+  if (navGrid) navGrid.classList.toggle('selected', isGrid);
+  if (navSingle) navSingle.classList.toggle('selected', !isGrid);
+
+  const cam = getCam();
+  if (topBreadcrumb) {
+    topBreadcrumb.textContent = isGrid ? 'LIVE CAMERA MATRIX' : (cam ? cam.name.toUpperCase() : 'SINGLE CAMERA FOCUS');
+  }
+
+  if (isGrid) {
+    ptzController.reset();
+    renderCameraGrid();
+  } else {
+    renderSelected(true);
+    renderDetectionConfig();
+  }
+}
+
+function switchToGridView() {
+  setViewMode('grid');
+}
+
+function switchToFocusView(camId) {
+  setViewMode('focus', camId);
+  resetEditor();
+  renderCameraList();
+  $('workspace-grid')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function renderCameraGrid() {
+  const grid = $('camera-matrix-grid');
+  if (!grid) return;
+  if (!state.cameras.length) {
+    grid.innerHTML = `
+      <div class="empty-grid-msg">
+        <div class="empty-icon" style="font-size:48px;color:#23374d;">▣</div>
+        <h3 style="margin:0;color:#94a8c0;">No cameras configured</h3>
+        <p style="margin:0;color:#6b7d9a;font-size:13px;">Add an RTSP stream, USB camera or video source to start live multi-camera monitoring.</p>
+        <button class="primary-btn" id="grid-add-camera">+ Add camera</button>
+      </div>`;
+    $('grid-add-camera')?.addEventListener('click', openModal);
+    return;
+  }
+
+  grid.className = 'camera-matrix-grid layout-' + state.gridLayout;
+
+  grid.innerHTML = state.cameras.map(cam => {
+    const isOnline = ['online', 'connecting', 'reconnecting'].includes(cam.status);
+    const streamSrc = cam.enabled ? `/stream/${encodeURIComponent(cam.id)}?v=${Date.now()}` : '';
+    const isSelected = cam.id === state.selected;
+    const cfg = cam.config || {};
+    const badges = [];
+    if (cfg.fire_enabled) badges.push('<span class="detection-badge fire" style="font-size:9px;padding:2px 5px">🔥 Fire</span>');
+    if (cfg.violence_enabled) badges.push('<span class="detection-badge violence" style="font-size:9px;padding:2px 5px">⚔ Weapon</span>');
+    if (cfg.anomaly_enabled) badges.push('<span class="detection-badge anomaly" style="font-size:9px;padding:2px 5px">🧍 Anomaly</span>');
+
+    return `
+      <div class="camera-tile ${isSelected ? 'active-selected' : ''}" data-tile-id="${esc(cam.id)}" title="Double-click to open full view with PTZ controls (${esc(cam.name)})">
+        <div class="tile-top-bar">
+          <div class="tile-title-group">
+            <i class="light ${dotClass(cam.status)}"></i>
+            <span class="tile-name">${esc(cam.name)}</span>
+          </div>
+          <div class="tile-stats">
+            <span>👥 ${cam.current_people || 0}</span>
+            <span>${cam.fps || 0} FPS</span>
+          </div>
+        </div>
+        ${cam.enabled ? `
+          <img class="tile-stream" src="${streamSrc}" alt="${esc(cam.name)} stream"
+               onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';"
+               onload="this.style.display='block'; if(this.nextElementSibling) this.nextElementSibling.style.display='none';" />
+          <div class="tile-placeholder" style="display:none">
+            <div class="tile-placeholder-icon">▣</div>
+            <b>${esc(cam.name)}</b>
+            <small>${esc(cam.error || 'Awaiting video feed…')}</small>
+          </div>
+        ` : `
+          <div class="tile-placeholder">
+            <div class="tile-placeholder-icon">⏸</div>
+            <b>${esc(cam.name)}</b>
+            <small>Camera paused</small>
+          </div>
+        `}
+        <div class="tile-bottom-bar">
+          <div class="tile-badges">${badges.join(' ')}</div>
+          <div class="tile-dblclick-hint">Double-click to open ↗</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  grid.querySelectorAll('.camera-tile').forEach(tile => {
+    const camId = tile.dataset.tileId;
+    tile.onclick = (e) => {
+      state.selected = camId;
+      grid.querySelectorAll('.camera-tile').forEach(t => t.classList.toggle('active-selected', t.dataset.tileId === camId));
+      renderCameraList();
+    };
+    tile.ondblclick = (e) => {
+      e.preventDefault();
+      switchToFocusView(camId);
+    };
+  });
+}
+
+const ptzController = {
+  scale: 1.0,
+  panX: 0,
+  panY: 0,
+  isPanning: false,
+  startX: 0,
+  startY: 0,
+  minScale: 1.0,
+  maxScale: 5.0,
+  step: 0.25,
+
+  init() {
+    const display = $('video-display');
+    const viewport = $('video-viewport');
+    if (!display || !viewport) return;
+
+    display.addEventListener('wheel', (e) => {
+      if (state.editMode) return;
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? this.step : -this.step;
+      const rect = display.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      this.zoomAt(delta, mouseX, mouseY, rect.width, rect.height);
+    }, { passive: false });
+
+    viewport.addEventListener('mousedown', (e) => {
+      if (state.editMode || this.scale <= 1.0) return;
+      if (e.button !== 0) return;
+      this.isPanning = true;
+      this.startX = e.clientX - this.panX;
+      this.startY = e.clientY - this.panY;
+      viewport.classList.add('is-panning');
+      e.preventDefault();
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!this.isPanning) return;
+      const rect = display.getBoundingClientRect();
+      this.panX = e.clientX - this.startX;
+      this.panY = e.clientY - this.startY;
+      this.clamp(rect.width, rect.height);
+      this.apply();
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (this.isPanning) {
+        this.isPanning = false;
+        viewport.classList.remove('is-panning');
+      }
+    });
+
+    viewport.addEventListener('dblclick', (e) => {
+      if (state.editMode) return;
+      e.preventDefault();
+      if (this.scale > 1.05) {
+        this.reset();
+      } else {
+        const rect = display.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        this.zoomAt(1.0, mouseX, mouseY, rect.width, rect.height);
+      }
+    });
+
+    $('ptz-zoom-in')?.addEventListener('click', () => this.zoomIn());
+    $('ptz-zoom-out')?.addEventListener('click', () => this.zoomOut());
+    $('ptz-zoom-reset')?.addEventListener('click', () => this.reset());
+    $('ptz-fullscreen')?.addEventListener('click', () => this.toggleFullscreen());
+  },
+
+  zoomAt(deltaScale, focalX, focalY, containerW, containerH) {
+    const oldScale = this.scale;
+    let newScale = Math.max(this.minScale, Math.min(this.maxScale, oldScale + deltaScale));
+    if (Math.abs(newScale - oldScale) < 0.001) return;
+
+    const centerX = containerW / 2;
+    const centerY = containerH / 2;
+    const dx = focalX - centerX - this.panX;
+    const dy = focalY - centerY - this.panY;
+
+    const ratio = newScale / oldScale;
+    this.panX -= dx * (ratio - 1);
+    this.panY -= dy * (ratio - 1);
+    this.scale = newScale;
+
+    this.clamp(containerW, containerH);
+    this.apply();
+  },
+
+  zoomIn() {
+    const display = $('video-display');
+    const rect = display ? display.getBoundingClientRect() : { width: 800, height: 450 };
+    this.zoomAt(this.step * 1.5, rect.width / 2, rect.height / 2, rect.width, rect.height);
+  },
+
+  zoomOut() {
+    const display = $('video-display');
+    const rect = display ? display.getBoundingClientRect() : { width: 800, height: 450 };
+    this.zoomAt(-this.step * 1.5, rect.width / 2, rect.height / 2, rect.width, rect.height);
+  },
+
+  reset() {
+    this.scale = 1.0;
+    this.panX = 0;
+    this.panY = 0;
+    this.isPanning = false;
+    this.apply();
+  },
+
+  clamp(containerW, containerH) {
+    if (this.scale <= 1.0) {
+      this.scale = 1.0;
+      this.panX = 0;
+      this.panY = 0;
+      return;
+    }
+    const maxPanX = (containerW * (this.scale - 1)) / 2;
+    const maxPanY = (containerH * (this.scale - 1)) / 2;
+    this.panX = Math.max(-maxPanX, Math.min(maxPanX, this.panX));
+    this.panY = Math.max(-maxPanY, Math.min(maxPanY, this.panY));
+  },
+
+  apply() {
+    const viewport = $('video-viewport');
+    const video = $('video-feed');
+    const overlay = $('draw-overlay');
+    const badge = $('ptz-zoom-badge');
+    const minimap = $('ptz-minimap-container');
+    const crop = $('ptz-minimap-crop');
+
+    const isZoomed = this.scale > 1.01;
+    if (viewport) viewport.classList.toggle('ptz-draggable', isZoomed);
+
+    const transform = isZoomed ? `translate(${this.panX}px, ${this.panY}px) scale(${this.scale})` : '';
+    if (video) video.style.transform = transform;
+    if (overlay) overlay.style.transform = transform;
+
+    if (badge) badge.textContent = `${Math.round(this.scale * 100)}%`;
+
+    if (minimap && crop) {
+      minimap.classList.toggle('hidden', !isZoomed);
+      if (isZoomed) {
+        const cropW = 100 / this.scale;
+        const cropH = 100 / this.scale;
+        const display = $('video-display');
+        const rect = display ? display.getBoundingClientRect() : { width: 800, height: 450 };
+        const maxPanX = (rect.width * (this.scale - 1)) / 2 || 1;
+        const maxPanY = (rect.height * (this.scale - 1)) / 2 || 1;
+
+        const normX = this.panX / maxPanX;
+        const normY = this.panY / maxPanY;
+
+        const left = (50 - (normX * (50 - cropW / 2))) - cropW / 2;
+        const top = (50 - (normY * (50 - cropH / 2))) - cropH / 2;
+
+        crop.style.width = `${cropW}%`;
+        crop.style.height = `${cropH}%`;
+        crop.style.left = `${Math.max(0, Math.min(100 - cropW, left))}%`;
+        crop.style.top = `${Math.max(0, Math.min(100 - cropH, top))}%`;
+      }
+    }
+  },
+
+  toggleFullscreen() {
+    const display = $('video-display');
+    if (!display) return;
+    if (!document.fullscreenElement) {
+      display.requestFullscreen?.().catch(() => {});
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  }
+};
 
 function renderDetectionBadges(cam) {
   const container = $('detection-badges');
@@ -222,9 +519,12 @@ function resetEditor(){
   $('draw-overlay').classList.add('hidden'); $('save-drawing').classList.add('hidden');
   $('cancel-drawing').classList.add('hidden'); $('editor-hint').classList.add('hidden');
   $('draw-zone').classList.remove('hidden'); $('draw-line').classList.remove('hidden');
+  ptzController.reset();
 }
 function beginDrawing(mode){
   if (!getCam()) return toast('Select a camera first',true);
+  if (state.viewMode !== 'focus') switchToFocusView(state.selected);
+  ptzController.reset();
   state.editMode=mode; state.editPoints=[];
   $('draw-overlay').classList.remove('hidden'); $('save-drawing').classList.remove('hidden');
   $('cancel-drawing').classList.remove('hidden'); $('draw-zone').classList.add('hidden');
@@ -534,7 +834,45 @@ async function init(){
   };
   $('close-snapshot').onclick=()=>$('snapshot-modal').classList.add('hidden');
   $('snapshot-modal').onclick=(e)=>{if(e.target===$('snapshot-modal'))$('snapshot-modal').classList.add('hidden');};
-  document.addEventListener('keydown',(e)=>{if(e.key==='Escape'){closeModal();resetEditor();$('snapshot-modal').classList.add('hidden');}});
+  ptzController.init();
+  $('home-grid-btn')?.addEventListener('click', switchToGridView);
+  $('focus-back-btn')?.addEventListener('click', switchToGridView);
+  $('nav-grid')?.addEventListener('click', (e) => { e.preventDefault(); switchToGridView(); });
+  $('nav-single')?.addEventListener('click', (e) => { e.preventDefault(); switchToFocusView(state.selected || state.cameras[0]?.id); });
+  $('grid-refresh-btn')?.addEventListener('click', () => { refreshCameras(); toast('Camera feeds refreshed'); });
+  $('grid-layout-selector')?.querySelectorAll('.layout-btn').forEach(btn => {
+    btn.onclick = () => {
+      $('grid-layout-selector').querySelectorAll('.layout-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.gridLayout = btn.dataset.layout;
+      const grid = $('camera-matrix-grid');
+      if (grid) grid.className = 'camera-matrix-grid layout-' + state.gridLayout;
+    };
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+    if (e.key === 'Escape' || e.key === 'h' || e.key === 'H') {
+      closeModal();
+      resetEditor();
+      $('snapshot-modal')?.classList.add('hidden');
+      switchToGridView();
+    } else if (state.viewMode === 'focus') {
+      if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        ptzController.zoomIn();
+      } else if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        ptzController.zoomOut();
+      } else if (e.key === '0') {
+        e.preventDefault();
+        ptzController.reset();
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        ptzController.toggleFullscreen();
+      }
+    }
+  });
   
   // Alert config buttons
   $('edit-camera').onclick = editCameraModal;
@@ -575,6 +913,7 @@ async function init(){
 async function loadDashboard(){
   const results = await Promise.allSettled([refreshCameras(), refreshStats(), refreshEvents()]);
   for (const result of results) if (result.status === 'rejected') console.error('Dashboard section failed:', result.reason);
+  setViewMode('grid');
   connectWS();
   if(!window.__vgPolling){
     window.__vgPolling=true;
