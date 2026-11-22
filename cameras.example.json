@@ -1,0 +1,9 @@
+{
+  "cameras": [
+    {"name":"Main Gate", "source":"${CAMERA_GATE_RTSP}", "enabled":true,
+     "zone":[], "tripwire":[],
+     "features":{"fire_enabled":true,"violence_enabled":true,"anomaly_enabled":false,"object_enabled":false,"telegram_enabled":false,"tts_enabled":false}},
+    {"name":"Warehouse", "source":"${CAMERA_WAREHOUSE_RTSP}", "enabled":true,
+     "features":{"fire_enabled":true,"violence_enabled":true,"anomaly_enabled":false,"object_enabled":false}}
+  ]
+}

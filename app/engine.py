@@ -382,11 +382,20 @@ class CameraManager:
         self.alert_manager = alert_manager
         self.lock = threading.RLock()
         self.workers: dict[str, CameraWorker] = {}
+        self.capacity_limited: set[str] = set()
 
     def start(self):
-        for camera in self.db.list_cameras(safe=False):
-            if camera['enabled']:
-                self.reload(camera['id'])
+        cameras = self.db.list_cameras(safe=False)
+        enabled_cameras = [c for c in cameras if c['enabled']]
+        # Respect max_active_cameras limit
+        max_cams = settings.max_active_cameras
+        self.capacity_limited.clear()
+        for i, camera in enumerate(enabled_cameras):
+            if i >= max_cams:
+                # Mark remaining cameras as at capacity limit
+                self.capacity_limited.add(camera['id'])
+                continue
+            self.reload(camera['id'])
 
     def reload(self, camera_id):
         with self.lock:
@@ -406,7 +415,9 @@ class CameraManager:
     def telemetry(self, cam_id):
         with self.lock:
             worker = self.workers.get(cam_id)
-        return worker.telemetry() if worker else {'status':'disabled', 'error':'', 'current_people':0, 'fps':0, 'last_frame_age_seconds':None}
+        if cam_id in self.capacity_limited:
+            return {'status': 'capacity_limit', 'error': 'Max active cameras reached', 'current_people': 0, 'fps': 0, 'last_frame_age_seconds': None}
+        return worker.telemetry() if worker else {'status': 'disabled', 'error': '', 'current_people': 0, 'fps': 0, 'last_frame_age_seconds': None}
 
     def frame(self, cam_id):
         with self.lock:

@@ -1,0 +1,3 @@
+# Optional 3DCNN; requires confirmed class index, not enabled by default.
+# For NVIDIA TensorFlow GPU on Windows use WSL2 rather than native Windows.
+tensorflow>=2.18,<3

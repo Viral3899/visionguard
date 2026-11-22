@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.falsepositive_backup
 
 # Virtual environments
 .venv/
@@ -26,6 +27,7 @@ venv*/
 venv_cuda/
 env/
 ENV/
+.venv_backup_*/
 
 # IDE
 .vscode/
@@ -38,45 +40,54 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Database
+# Database & Runtime State
 *.db
 *.db-wal
 *.db-shm
+data/*.db*
+data/*.json
 data/visionguard.db*
-
-# Logs
-*.log
-
-# Snapshots and test videos
 data/snapshots/*
 data/test_videos/*
 !data/snapshots/.gitkeep
 !data/test_videos/.gitkeep
+!data/.gitkeep
 
-# Models (large files - download separately)
+# Models & Weights (Large binary files - download via download_models.py or setup_hf_models.py)
 models/*.pt
+models/*.h5
+models/*.onnx
+*.pt
+*.pth
+*.h5
+*.onnx
+!models/install_status.json
+!models/training_report.json
 !models/.gitkeep
 
-# Environment files (sensitive)
+# Datasets & Training Runs
+datasets/
+data/datasets/
+runs/
+.ultralytics/
+
+# Environment files (sensitive credentials)
 .env
 .env.local
 .env.*.local
 
-# PyTorch
-*.pth
-*.pt
+# Sub-working folders from merge
+VisionGuard_Combined/
+C*VisionGuard_Combined/
 
-# Ultralytics
-runs/
-.ultralytics/
-
-# Coverage
+# Coverage & Tests
 .coverage
 htmlcov/
 .pytest_cache/
 
-# Misc
+# Misc Archives & Backups
 *.zip
 *.tar.gz
 *.bak
 *.tmp
+*.partial

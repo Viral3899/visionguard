@@ -1,61 +1,28 @@
-#!/usr/bin/env python3
-"""Safely install user-supplied, trusted custom weapon/violence YOLO weights.
-
-The previous edition contained unverified Hugging Face repository names and
-placeholder URLs. This command intentionally does not download or replace
-bundled fire models from unverified sources.
-
-Usage: python setup_hf_models.py --weapon C:\\Users\\me\\Downloads\\best.pt
-       python setup_hf_models.py --violence C:\\Users\\me\\Downloads\\fight.pt
-"""
+"""Install locally supplied specialist model weights without downloading from HF."""
 import argparse
 import hashlib
 import shutil
 from pathlib import Path
+from model_registry import MODELS, labels
+from install_security_models import verify_labels
 
-ROOT = Path(__file__).resolve().parent
-from app.security_labels import weapon_class, is_fight_label
-
-
-def install(source: str, target: Path, allowed: set[str]):
-    source_path = Path(source).expanduser().resolve()
-    if not source_path.is_file() or source_path.suffix.lower() != '.pt':
-        raise ValueError(f'Cannot read a YOLO .pt checkpoint: {source_path}')
-    # Torch .pt files may execute pickle code during loading. Only user-verified
-    # weights from a trusted source should be passed to this operation.
+def install(src,output,kind):
     from ultralytics import YOLO
-    model = YOLO(str(source_path))
-    names = model.names
-    labels = {str(v).strip().lower() for v in (names.values() if isinstance(names, dict) else names)}
-    if not (any(weapon_class(x) for x in labels) if allowed == {'weapon'} else
-            any(is_fight_label(x) for x in labels)) or len(labels) > 40:
-        raise ValueError(f'The checkpoint does not look like a specialist model: {sorted(labels)}')
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if source_path != target.resolve():
-        shutil.copyfile(source_path, target)
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    print(f'Installed {target.name} ({target.stat().st_size:,} bytes)')
-    print(f'Model classes: {sorted(labels)}')
-    print(f'SHA-256: {digest}')
-    print('Validate performance on representative labelled videos before using for security alerts.')
-
+    path=Path(src).expanduser().resolve()
+    if path.suffix.lower()!='.pt' or not path.is_file():raise ValueError('Expected existing .pt checkpoint')
+    names=labels(YOLO(str(path)))
+    verify_labels(kind,names)
+    MODELS.mkdir(exist_ok=True)
+    dest=MODELS/output
+    if path!=dest.resolve():shutil.copy2(path,dest)
+    print('Installed',dest,'classes:',names,'SHA256:',hashlib.sha256(dest.read_bytes()).hexdigest())
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--weapon', help='Path to a trusted specialist knife/weapon YOLO checkpoint')
-    parser.add_argument('--violence', help='Path to a trusted trained violence/fight detector')
-    args = parser.parse_args()
-    if not (args.weapon or args.violence):
-        parser.print_help()
-        print('\nThere is no verified custom knife/fight checkpoint bundled in this project.')
-        return
-    if args.weapon:
-        install(args.weapon, ROOT / 'models' / 'cs2-yolo12-weapon-detection.pt',
-                {'weapon'})
-    if args.violence:
-        install(args.violence, ROOT / 'models' / 'fight-yolov8-nano.pt',
-                {'violence'})
-
-
-if __name__ == '__main__':
-    main()
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--weapon');p.add_argument('--violence');p.add_argument('--fire')
+    args=p.parse_args()
+    if not any((args.weapon,args.violence,args.fire)):p.error('Specify --weapon, --violence or --fire')
+    if args.weapon:install(args.weapon,'threat-yolov8n.pt','weapon')
+    if args.violence:install(args.violence,'fight-yolov8-nano.pt','fight')
+    if args.fire:install(args.fire,'yolov26-fire-smoke.pt','fire')
+if __name__=='__main__':main()

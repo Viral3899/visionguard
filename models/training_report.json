@@ -1,0 +1,26 @@
+{
+  "model": "C:\\Users\\viral\\Downloads\\VisionGuard_Python312_FalseDetection_Fix_Training\\VisionGuard_FalsePositive_Fix_Python312\\models\\visionguard-weapon-trained.pt",
+  "dataset": "C:\\Users\\viral\\Downloads\\VisionGuard_Python312_FalseDetection_Fix_Training\\VisionGuard_FalsePositive_Fix_Python312\\data\\datasets\\visionguard_weapon\\data.yaml",
+  "base_weights": "C:\\Users\\viral\\Downloads\\VisionGuard_Python312_FalseDetection_Fix_Training\\VisionGuard_FalsePositive_Fix_Python312\\models\\yolov8n.pt",
+  "device": "0",
+  "epochs_requested": 40,
+  "classes": [
+    "knife"
+  ],
+  "dataset_audit": {
+    "classes": [
+      "knife"
+    ],
+    "train_boxes": {
+      "0": 1798
+    },
+    "val_boxes": {
+      "0": 456
+    }
+  },
+  "metrics": {
+    "holdout_map50": 0.9699488082049764,
+    "holdout_map50_95": 0.6542541371192683
+  },
+  "warning": "These metrics assess images held out from the supplied datasets, NOT independent camera recordings. Training is never a guarantee of higher real-world detection accuracy."
+}

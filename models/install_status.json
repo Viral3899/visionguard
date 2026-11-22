@@ -1,0 +1,18 @@
+{
+  "fire": {
+    "status": "ready",
+    "path": "C:\\Users\\viral\\Downloads\\VisionGuard_Python312_FalseDetection_Fix_Training\\VisionGuard_FalsePositive_Fix_Python312\\models\\yolov26-fire-smoke.pt"
+  },
+  "fight": {
+    "status": "ready",
+    "path": "C:\\Users\\viral\\Downloads\\VisionGuard_Python312_FalseDetection_Fix_Training\\VisionGuard_FalsePositive_Fix_Python312\\models\\fight-yolov8-nano.pt"
+  },
+  "threat": {
+    "status": "ready",
+    "path": "C:\\Users\\viral\\Downloads\\VisionGuard_Python312_FalseDetection_Fix_Training\\VisionGuard_FalsePositive_Fix_Python312\\models\\threat-yolov8n.pt"
+  },
+  "3dcnn": {
+    "status": "downloaded_unverified_classes",
+    "path": "C:\\Users\\viral\\Downloads\\VisionGuard_Python312_FalseDetection_Fix_Training\\VisionGuard_FalsePositive_Fix_Python312\\models\\fight_detection_model.h5"
+  }
+}

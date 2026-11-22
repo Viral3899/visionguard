@@ -2,87 +2,55 @@
 setlocal
 set PYTHONUTF8=1
 cd /d "%~dp0"
-echo ============================================
-echo VisionGuard AI Surveillance - Installation
-echo ============================================
-echo.
-
-REM Remove old venv_cuda if exists (we use .venv now)
-if exist venv_cuda (
-  echo Removing old venv_cuda...
-  rmdir /s /q venv_cuda
-)
-
+echo ===========================================================
+echo  VisionGuard - Python 3.12 x64 - CUDA PyTorch GPU Installer
+echo ===========================================================
+set "PY312="
 where py >nul 2>nul
-if %errorlevel% equ 0 (
-  echo Using 'py' launcher...
-  py -3.11 -m venv .venv
-) else (
-  echo Using 'python' command...
-  python -m venv .venv
+if not errorlevel 1 (
+  py -3.12 -c "import sys; assert sys.maxsize > 2**32" >nul 2>nul
+  if not errorlevel 1 set "PY312=py -3.12"
 )
-if errorlevel 1 (
-  echo.
-  echo ERROR: Python venv creation failed.
-  echo Make sure Python 3.11+ is installed and in PATH.
-  pause & exit /b 1
+if not defined PY312 (
+  where python >nul 2>nul
+  if not errorlevel 1 (
+    python -c "import sys; assert sys.version_info[:2] == (3,12) and sys.maxsize > 2**32" >nul 2>nul
+    if not errorlevel 1 set "PY312=python"
+  )
 )
-
-echo.
-echo Upgrading pip...
-.venv\Scripts\python.exe -m pip install --upgrade pip
-if errorlevel 1 (echo ERROR: pip upgrade failed & pause & exit /b 1)
-
-echo.
-echo Installing PyTorch with CUDA 12.4 support (for RTX 3050/40 series)...
-.venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-if errorlevel 1 (
-  echo WARNING: CUDA PyTorch install failed, trying CPU version...
-  .venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+if not defined PY312 (
+  echo ERROR: Python 3.12 64-bit was not found.
+  echo Install Python 3.12 x64 from https://www.python.org/downloads/
+  echo Tick 'Add Python to PATH' when installing, or use the Windows py launcher.
+  echo Then double-click ONE_CLICK_SETUP_AND_RUN.bat again.
+  exit /b 1
 )
-
-echo.
-echo Installing dependencies from requirements.txt...
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-if errorlevel 1 (echo ERROR: Dependency installation failed & pause & exit /b 1)
-
-echo.
-echo Setting up directories...
-if not exist .env copy .env.example .env
+echo Using: %PY312%
+%PY312% bootstrap_env.py %*
+if errorlevel 1 goto :error
 if not exist data mkdir data
-if not exist data\snapshots mkdir data\snapshots
+.venv\Scripts\python.exe init_config.py
+if errorlevel 1 goto :error
 if not exist models mkdir models
-
+.venv\Scripts\python.exe -c "import pathlib; p=pathlib.Path('models'); print('Downloaded models:', [x.name for x in p.glob('*.pt')])"
 echo.
-echo Downloading base YOLO models...
-.venv\Scripts\python.exe download_models.py
-if errorlevel 1 (echo ERROR: Model installation failed & pause & exit /b 1)
-echo Installing Hugging Face fire/smoke model (requires internet)...
-.venv\Scripts\python.exe install_fire_smoke_model.py
-if errorlevel 1 (echo ERROR: Required fire/smoke model is missing. Download best.pt from Hugging Face and run install_fire_smoke_model.py --local path-to-best.pt & pause & exit /b 1)
-.venv\Scripts\python.exe check_fire.py
-if errorlevel 1 (echo ERROR: Fire detector preflight failed & pause & exit /b 1)
-echo.
-echo Dedicated weapon + fight checkpoint installation requires trusting community .pt files.
-echo The CS2 weapon detector recognizes GAME firearms; it is NOT trained for real-world knives.
-choice /C YN /M "Download and load the requested weapon and fight models"
-if errorlevel 2 goto :skip_security_models
-.venv\Scripts\python.exe install_security_models.py --accept-checkpoint-risk
-if errorlevel 1 (echo WARNING: Specialist install failed. Use DOWNLOAD_SECURITY_MODELS_WINDOWS.bat later.)
-:skip_security_models
+echo Hugging Face community .pt checkpoints may execute serialized Python code.
+echo Only accept checkpoints if you trust their publishers.
+set "INSTALL_SECURITY=N"
+if not exist models\yolov26-fire-smoke.pt set "INSTALL_SECURITY=Y"
+if not exist models\fight-yolov8-nano.pt set "INSTALL_SECURITY=Y"
+if not exist models\threat-yolov8n.pt set "INSTALL_SECURITY=Y"
+if /I "%INSTALL_SECURITY%"=="Y" (
+  choice /C YN /M "Trust and download 3 community YOLO checkpoints for fire, fight, threat"
+  if errorlevel 2 goto :skip_models
+  .venv\Scripts\python.exe install_security_models.py --accept-checkpoint-risk
+  if errorlevel 1 echo WARNING: Some downloads failed. Run verify_models.py.
+)
+:skip_models
+.venv\Scripts\python.exe verify_runtime.py
+if errorlevel 1 goto :error
 .venv\Scripts\python.exe verify_models.py
-
-echo.
-echo ============================================
-echo Installation complete!
-echo ============================================
-echo.
-echo Next steps:
-echo 1. Edit .env and set ADMIN_PASSWORD and SESSION_SECRET to strong unique values
-echo 2. Run: run.bat and sign in with username admin and your ADMIN_PASSWORD
-echo 3. Create client logins from Client workspaces and assign cameras to each client
-echo 4. See verify_models.py output to confirm whether fire, fight and CS2-gun models loaded.
-echo 5. If skipped, run DOWNLOAD_SECURITY_MODELS_WINDOWS.bat to install weapon and fight models.
-echo 6. For a REAL small-knife model use a checkpoint trained for CCTV knives; CS2 gun weights cannot do this.
-echo.
-pause
+exit /b 0
+:error
+echo INSTALL FAILED. Review the error messages above.
+exit /b 1

@@ -1,3 +1,8 @@
+import os
+os.environ['ADMIN_PASSWORD'] = ''
+os.environ['SESSION_SECRET'] = 'test-secret-for-testing-only'
+os.environ['DASHBOARD_PASSWORD'] = ''
+
 from fastapi.testclient import TestClient
 from app.main import create_app
 

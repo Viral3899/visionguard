@@ -1,0 +1,68 @@
+VISIONGUARD MULTI-CAMERA -- PYTHON 3.12 64-BIT -- GPU
+====================================================
+ONE_CLICK_SETUP_TRAIN_DEPLOY.bat   ALL sources/models + 3 training tasks + inference
+SETUP_MODELS_ONLY.bat             Download pretrained models only, then inference
+CONFIGURE_CAMERAS_WINDOWS.bat      Import/update multiple RTSP/USB cameras
+INFERENCE_MULTI_CAMERA.bat        Live camera dashboard ONLY; does not train
+INFERENCE_VIDEO.bat               Annotated MP4 + JSON detection evidence
+TRAIN_ALL_MODELS.bat              Run full annotated-dataset GPU training again
+VERIFY_MULTI_CAMERA.bat           GPU/model/admin/RTSP readiness checks
+ACTIVATE_TRAINED_MODELS_AFTER_REVIEW.bat   Use trained weights AFTER site evaluation
+
+Read MULTI_CAMERA_DEPLOYMENT_GUIDE.md before deployment.
+The old version's instructions follow below for reference.
+
+VISIONGUARD INTEGRATED — WINDOWS / PYTHON 3.12 X64 / CUDA
+======================================================
+All-in-one dashboard, Hugging Face pretrained detection,
+YOLO weapon fine-tuning, optional trained fight VIDEO classification,
+video diagnostics, alerts, annotated recordings.
+
+FIRST TIME:
+  1. Install Python 3.12 64-bit and NVIDIA GPU driver if applicable.
+  2. Double-click ONE_CLICK_SETUP_AND_RUN.bat
+  3. Read and approve third-party checkpoint download risk only if you trust them.
+  4. Open http://127.0.0.1:8000 and sign in using the locally generated credentials.
+
+NEXT TIME:
+  Double-click run.bat
+
+TEST A VIDEO (all frames, diagnostics/report saved next to input):
+  Drag a video onto ANALYZE_VIDEO_WINDOWS.bat
+  OR:
+  .venv\Scripts\python.exe analyze_video.py --input "C:\videos\clip.mp4"
+
+TRAIN WEAPONS (GPU, opt-in, downloads annotated datasets):
+  Double-click TRAIN_AND_RUN.bat
+  Choose [1] 114 synthetic sample, or [2] annotated sample + pistol/knife VOC.
+  Read source licenses. No accuracy is assumed from a successful run.
+
+TRAIN FIGHT ACTION CLASSIFIER (optional, GPU):
+  Put independently labeled normal and fight clips (min 5 each) in:
+    data\fight_clips\normal\
+    data\fight_clips\fight\
+  Double-click TRAIN_FIGHT_CLASSIFIER_WINDOWS.bat
+
+CHECK INSTALLATION:
+  .venv\Scripts\python.exe verify_runtime.py --require-gpu
+  .venv\Scripts\python.exe verify_models.py
+
+TESTS:
+  .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+  .venv\Scripts\python.exe -m pytest -q
+
+NO MODEL WEIGHTS OR DATASETS ARE IN THIS SOURCE ZIP.
+Windows GPU setup, internet downloads and actual CCTV accuracy have not
+been validated on this packaging computer; test on your machine.
+For details and limitations read README.md.
+
+FALSE POSITIVE FIX FOR YOUR ROOM SCREENSHOTS:
+  High-score gun on window / knives on walls / grenade on shirt are NOT trusted.
+  Detection candidates are no longer drawn before review policy and confirmation.
+  Use ANALYZE_VIDEO_WINDOWS.bat on the original CLEAN video.
+  Inspect .events.jsonl for "suppressed" reasons and false negatives.
+  To improve training, extract verified weapon-free frames with
+  EXTRACT_VERIFIED_NEGATIVES_WINDOWS.bat, REVIEW all images,
+  and run TRAIN_AND_RUN.bat (choose to include verified negatives).
+  Default strict policy can MISS genuine or unattended threats.
+  Review FALSE_POSITIVE_FIX_GUIDE.md and tune .env after evaluation.
