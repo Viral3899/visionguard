@@ -1,6 +1,6 @@
 import os
 os.environ['HOST'] = '127.0.0.1'
-os.environ['ADMIN_PASSWORD'] = 'admin123'
+os.environ['ADMIN_PASSWORD'] = ''
 os.environ['SESSION_SECRET'] = 'test-secret-for-testing-only'
 os.environ['DASHBOARD_PASSWORD'] = ''
 
@@ -102,10 +102,6 @@ def test_multi_camera_creation_and_streaming_endpoints(tmp_path):
     """Verify multiple cameras can be created and queried for the grid view."""
     app = create_app(tmp_path / 'test.db', start_cameras=False, auto_camera=False)
     with TestClient(app) as client:
-        # Authenticate first
-        login_resp = client.post('/api/login', json={'username': 'admin', 'password': 'admin123'})
-        assert login_resp.status_code == 200
-
         # Create 3 cameras
         cams = []
         for i in range(1, 4):

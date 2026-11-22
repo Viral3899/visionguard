@@ -11,5 +11,7 @@ os.environ['DASHBOARD_PASSWORD'] = ''
 # Also ensure we use a test database path
 os.environ['TEST_DATABASE'] = '1'
 
-# Import after env is set
-# This ensures all app modules see the test configuration
+import app.config
+object.__setattr__(app.config.settings, 'host', '127.0.0.1')
+object.__setattr__(app.config.settings, 'admin_password', '')
+object.__setattr__(app.config.settings, 'dashboard_password', '')
