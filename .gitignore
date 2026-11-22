@@ -91,3 +91,5 @@ htmlcov/
 *.bak
 *.tmp
 *.partial
+camera_test_*.jpg
+
