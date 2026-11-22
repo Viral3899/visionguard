@@ -7,7 +7,9 @@ This version adds **site camera import, GPU-aware multi-camera scheduling, real 
 1. Install **Python 3.12 64-bit** and a current NVIDIA driver. Extract to a short local folder path.
 2. **One-click full setup and automatic training:** `ONE_CLICK_SETUP_TRAIN_DEPLOY.bat` (license-review prompts and internet required; may need many GB disk and long GPU processing).
 3. **Quick pretrained-model setup without training:** `SETUP_MODELS_ONLY.bat`.
-4. **Configure multiple cameras:** `CONFIGURE_CAMERAS_WINDOWS.bat`, or create `cameras.json` from `cameras.example.json` and set `${CAMERA_NAME}` values in `.env`.
+4. **Configure multiple cameras or smartphone:** 
+   - Use **`CONNECT_PHONE_CAMERA_WINDOWS.bat`** (or `python phone_camera_setup.py`) to auto-detect and connect **Windows 11 Phone Link ("Connected Camera")**, USB webcams, or Wi-Fi IP streams. See **`PHONE_CAMERA_GUIDE.md`**.
+   - Or run `CONFIGURE_CAMERAS_WINDOWS.bat` / create `cameras.json` from `cameras.example.json`.
 5. **Normal live inference, no training:** `INFERENCE_MULTI_CAMERA.bat`. **Offline video inference:** `INFERENCE_VIDEO.bat` or `python inference.py --mode video --input clip.mp4`.
 6. **Train separately any time:** `TRAIN_ALL_MODELS.bat`.
 7. **Readiness checks:** `VERIFY_MULTI_CAMERA.bat`.

@@ -251,19 +251,8 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
     async def discover_cameras(request: Request):
         require_admin(request)
         def scan():
-            import cv2
-            found = []
-            for index in range(8):
-                cap = CameraWorker._capture(str(index))
-                try:
-                    if cap.isOpened():
-                        ok, frame = cap.read()
-                        if ok and frame is not None:
-                            h, w = frame.shape[:2]
-                            found.append({'index': index, 'source': str(index), 'name': f'USB Camera {index}', 'width': w, 'height': h})
-                finally:
-                    cap.release()
-            return found
+            import camera_utils
+            return camera_utils.detect_cameras(max_index=8)
         return await asyncio.to_thread(scan)
 
     @app.post('/api/cameras/test-source')

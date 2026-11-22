@@ -43,3 +43,25 @@ def test_schema_validations_and_redaction(tmp_path):
         assert 'secret' not in client.get('/api/cameras').text
         assert client.get('/api/snapshots/../../../etc/passwd').status_code==404
         assert client.get('/api/events?limit=999').status_code==422
+
+
+def test_discover_cameras(tmp_path, monkeypatch):
+    import camera_utils
+    monkeypatch.setattr(camera_utils, 'detect_cameras', lambda max_index=8: [
+        {'index': 0, 'source': '0', 'name': 'Integrated Webcam (640x480)', 'friendly_name': 'Integrated Webcam',
+         'width': 640, 'height': 480, 'status': 'working', 'is_phone_candidate': False, 'type': 'built_in'},
+        {'index': 1, 'source': '1', 'name': 'Connected Camera (1920x1080)', 'friendly_name': 'Connected Camera',
+         'width': 1920, 'height': 1080, 'status': 'working', 'is_phone_candidate': True, 'type': 'phone'}
+    ])
+    app = create_app(tmp_path/'test.db', start_cameras=False)
+    with TestClient(app) as client:
+        resp = client.get('/api/cameras/discover')
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 2
+        assert data[0]['source'] == '0'
+        assert data[0]['is_phone_candidate'] is False
+        assert data[1]['source'] == '1'
+        assert data[1]['is_phone_candidate'] is True
+        assert data[1]['type'] == 'phone'
+
