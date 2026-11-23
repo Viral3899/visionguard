@@ -19,6 +19,7 @@ from .incidents import IncidentTracker, eligible_event, draw_event_box
 from .person_tracker import PersonDeduplicator
 from .trajectory import TrajectoryTracker
 from .traffic import TrafficEnforcementManager, draw_traffic_overlays
+from .business_analytics import BusinessAnalyticsManager, draw_business_overlays
 
 
 def draw_hud_overlay(
@@ -146,7 +147,10 @@ LOGGER = logging.getLogger(__name__)
 # presence/entry/exit/loitering frames.
 SNAPSHOT_EVENT_KINDS = frozenset({
     'fire_detected', 'smoke', 'violence', 'weapon', 'fall_detected', 'unusual_activity',
-    'triple_riding', 'red_light_violation', 'seatbelt_violation'
+    'triple_riding', 'red_light_violation', 'seatbelt_violation',
+    'inventory_shrinkage', 'suspicious_concealment',
+    'perimeter_trespass', 'tailgating_detected',
+    'worker_slip_fall', 'unresponsive_worker'
 })
 os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'rtsp_transport;tcp')
 
@@ -195,6 +199,7 @@ class CameraWorker:
         self.detection_manager = DetectionManager()
         self.trajectory_tracker = TrajectoryTracker(max_history=25, max_idle_seconds=5.0)
         self.traffic_manager = TrafficEnforcementManager()
+        self.business_manager = BusinessAnalyticsManager()
         self.incidents = IncidentTracker(settings.incident_min_confidence,
                                          settings.incident_confirmation_frames,
                                          max_missed_frames=max(2, settings.object_every_n_frames))
@@ -218,12 +223,14 @@ class CameraWorker:
         rec_status = self.recorder.get_status(self.camera['id']) if self.recorder else {}
         is_rec = bool(rec_status.get('is_recording', False))
         rec_duration = rec_status.get('duration_seconds', 0.0) if is_rec else 0.0
+        biz_summary = self.business_manager.get_summary() if hasattr(self, 'business_manager') else {}
         return {'status': self.status, 'error': self.error, 'has_frame': self.latest() is not None,
                 'current_people': self.current_people, 'unique_people_5m': self.unique_people_5m,
                 'is_recording': is_rec,
                 'recording_duration': rec_duration,
                 'recording_start_time': rec_status.get('start_time') if is_rec else None,
                 'show_objects': bool(self.camera_config.get('show_objects', 1)),
+                'business_analytics': biz_summary,
                 'fps': round(self.fps, 1),
                 'last_frame_age_seconds': round(time.monotonic() - self.last_frame, 1) if self.last_frame else None}
 
@@ -284,6 +291,7 @@ class CameraWorker:
                         scale = settings.max_frame_width / w
                         frame = cv2.resize(frame, (settings.max_frame_width, round(h * scale)), interpolation=cv2.INTER_AREA)
                     h, w = frame.shape[:2]
+                    now = time.monotonic()
                     
                     # Run person detection + tracking
                     args: dict[str, Any] = {'persist': True, 'tracker': 'bytetrack.yaml',
@@ -403,6 +411,18 @@ class CameraWorker:
                     all_events.extend(traffic_violations)
                     frame = draw_traffic_overlays(frame, traffic_violations, traffic_plates)
 
+                    # Run Enterprise Business Analytics (Loss Prevention, Perimeter, Worker Safety, Foot Traffic)
+                    biz_events = self.business_manager.process_frame(
+                        frame, persons, detected_objs, tripwire=self.camera.get('tripwire'), now=now
+                    )
+                    for b_event in biz_events:
+                        self._handle_event(frame, b_event)
+                    all_events.extend(biz_events)
+                    show_heatmap = bool(self.camera_config.get('show_heatmap', 0))
+                    frame = draw_business_overlays(
+                        frame, biz_events, foot_traffic=self.business_manager.foot_traffic, show_heatmap=show_heatmap
+                    )
+
                     # Interactive geometry (zone intrusion, tripwire crossing)
                     is_intruded = any(e.get('type') in ('intrusion', 'restricted') for e in all_events)
                     tripwire_crossed = any(e.get('type') in ('tripwire', 'tripwire_crossed') for e in all_events)
@@ -422,7 +442,7 @@ class CameraWorker:
                                 counts['electronics'] += 1
                             elif cat == 'daily':
                                 counts['daily'] += 1
-                    has_threat = any(item.get('type') in ('weapon', 'violence', 'fire_detected', 'smoke') or 'threat' in str(item.get('type', '')) for item in all_events)
+                    has_threat = any(item.get('type') in ('weapon', 'violence', 'fire_detected', 'smoke', 'perimeter_trespass', 'tailgating_detected', 'unresponsive_worker') or 'threat' in str(item.get('type', '')) for item in all_events)
                     if has_threat:
                         counts['threats'] += 1
 

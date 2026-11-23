@@ -126,15 +126,16 @@ if not exist models mkdir models
 echo.
 
 :: ------------------------------------------------------------------
-:: 6. Download and Verify AI Models
+:: 6. Download and Verify AI Models & Hardware Diagnostics
 :: ------------------------------------------------------------------
-echo [5/5] Downloading and verifying all AI models...
+echo [5/5] Downloading and verifying all AI models and hardware...
 .venv\Scripts\python.exe setup_models.py
 if errorlevel 1 (
     echo [ERROR] Model download or verification failed. Please check internet connection.
     pause
     exit /b 1
 )
+.venv\Scripts\python.exe diagnose_deployment.py
 echo.
 
 :: ------------------------------------------------------------------
