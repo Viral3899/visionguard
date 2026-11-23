@@ -118,8 +118,8 @@ class Settings:
     enable_fall_detection: bool = os.getenv('ENABLE_FALL_DETECTION', 'true').lower() == 'true'
     enable_loitering_detection: bool = os.getenv('ENABLE_LOITERING_DETECTION', 'false').lower() == 'true'
     loitering_time_seconds: int = get_int('LOITERING_TIME_SECONDS', 30, 5)
-    # YOLO-World open vocabulary classes - includes weapons, fire, violence, falls
-    yolo_world_classes: tuple[str, ...] = tuple(x.strip() for x in os.getenv('YOLO_WORLD_CLASSES', 'fire,smoke,person fighting,knife,a person holding a knife,gun,a person holding a gun,weapon,pistol,rifle,blade,person falling').split(',') if x.strip())
+    # YOLO-World open vocabulary classes - includes weapons, fire, violence, falls, and daily objects
+    yolo_world_classes: tuple[str, ...] = tuple(x.strip() for x in os.getenv('YOLO_WORLD_CLASSES', 'fire,smoke,person fighting,knife,a person holding a knife,gun,a person holding a gun,weapon,pistol,rifle,blade,person falling,mobile,powerbank,chair').split(',') if x.strip())
 
     # General Object Detection (COCO classes - all daily life objects by default)
     object_model_path: str = os.getenv('OBJECT_MODEL_PATH', 'yolov8n.pt')

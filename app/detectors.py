@@ -18,6 +18,53 @@ from .threat_policy import ThreatPolicy
 LOGGER = logging.getLogger(__name__)
 
 
+CLASS_DISPLAY_NAMES = {
+    'cell phone': 'MOBILE',
+    'cellphone': 'MOBILE',
+    'mobile phone': 'MOBILE',
+    'phone': 'MOBILE',
+    'mobile': 'MOBILE',
+    'chair': 'CHAIR',
+    'powerbank': 'POWERBANK',
+    'power bank': 'POWERBANK',
+    'battery': 'POWERBANK',
+    'laptop': 'LAPTOP',
+    'bottle': 'BOTTLE',
+    'backpack': 'BACKPACK',
+    'handbag': 'BAG',
+    'suitcase': 'SUITCASE',
+    'book': 'BOOK',
+    'tv': 'TV / MONITOR',
+    'tvmonitor': 'TV / MONITOR',
+    'monitor': 'MONITOR',
+    'mouse': 'MOUSE',
+    'keyboard': 'KEYBOARD',
+    'remote': 'REMOTE / GADGET',
+    'cup': 'CUP',
+    'fork': 'FORK',
+    'spoon': 'SPOON',
+    'bowl': 'BOWL',
+    'clock': 'CLOCK',
+    'vase': 'VASE',
+    'scissors': 'SCISSORS',
+    'dining table': 'TABLE',
+    'couch': 'SOFA / COUCH',
+    'bed': 'BED',
+    'microwave': 'MICROWAVE',
+    'oven': 'OVEN',
+    'toaster': 'TOASTER',
+    'sink': 'SINK',
+    'refrigerator': 'FRIDGE',
+}
+
+
+def format_daily_object_label(class_name: str, conf: float) -> str:
+    """Format object name and explicit CF score (e.g. 'MOBILE | CF: 92%')."""
+    cleaned = str(class_name).strip().lower()
+    display_name = CLASS_DISPLAY_NAMES.get(cleaned, cleaned.upper())
+    return f"{display_name} | CF: {float(conf):.0%}"
+
+
 def draw_security_bounding_boxes(
     frame: np.ndarray,
     events: list[dict],
@@ -1160,8 +1207,8 @@ class ObjectDetector(BaseDetector):
             cv2.line(frame, (x2, y2), (x2 - clen, y2), (255, 255, 255), 1, cv2.LINE_AA)
             cv2.line(frame, (x2, y2), (x2, y2 - clen), (255, 255, 255), 1, cv2.LINE_AA)
 
-            # Compact label badge
-            label = f"{class_name.upper()} {conf:.0%}"
+            # Compact label badge with object name and explicit CF score
+            label = format_daily_object_label(class_name, conf)
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
             pad = 3
             tag_y1 = max(0, y1 - th - 2 * pad)

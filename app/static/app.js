@@ -185,6 +185,15 @@ function renderSelected(force=false) {
     recToolBtn.classList.toggle('recording-active', isRec);
     recToolBtn.disabled = !cam || !cam.enabled;
   }
+  const camViewRecBtn = $('cam-view-rec-btn');
+  const camViewRecText = $('cam-view-rec-text');
+  if (camViewRecBtn) {
+    camViewRecBtn.classList.toggle('active-rec', isRec);
+    camViewRecBtn.disabled = !cam || !cam.enabled;
+    if (camViewRecText) {
+      camViewRecText.textContent = isRec ? `⏹ Stop (${formatSecs(durSec)})` : '⏺ Record';
+    }
+  }
   if (isRec) {
     if (!recordingTimerInterval) startRecordingTimer();
   } else {
@@ -1028,6 +1037,16 @@ function updateObjectButtons() {
     gridBtn.style.borderColor = anyOn ? '#06b6d4' : '#2d445b';
     gridBtn.style.color = anyOn ? '#22d3ee' : '#94a8c0';
   }
+  const camViewObjBtn = $('cam-view-obj-btn');
+  const camViewObjText = $('cam-view-obj-text');
+  if (camViewObjBtn) {
+    camViewObjBtn.classList.toggle('active', show);
+    camViewObjBtn.classList.toggle('disabled-obj', !show);
+    camViewObjBtn.disabled = !cam;
+    if (camViewObjText) {
+      camViewObjText.textContent = show ? '👁 Objects: ON' : '👁‍🗨 Objects: OFF';
+    }
+  }
 }
 
 function startRecordingTimer() {
@@ -1053,6 +1072,12 @@ function stopRecordingTimer() {
   }
   $('rec-badge')?.classList.add('hidden');
   if ($('rec-timer')) $('rec-timer').textContent = 'REC 00:00';
+  const camViewRecBtn = $('cam-view-rec-btn');
+  const camViewRecText = $('cam-view-rec-text');
+  if (camViewRecBtn) {
+    camViewRecBtn.classList.remove('active-rec');
+    if (camViewRecText) camViewRecText.textContent = '⏺ Record';
+  }
 }
 
 async function refreshRecordings() {
@@ -1284,6 +1309,16 @@ async function init(){
     }
   });
   
+  // On-camera view floating controls
+  $('cam-view-rec-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleRecording();
+  });
+  $('cam-view-obj-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleObjectsDisplay();
+  });
+
   // Recording controls
   $('record-camera-btn')?.addEventListener('click', () => toggleRecording());
   $('record-camera-tool-btn')?.addEventListener('click', () => toggleRecording());
@@ -1311,6 +1346,8 @@ async function init(){
           if ($('rec-timer')) $('rec-timer').textContent = `REC ${timerStr}`;
           const recBtn = $('record-camera-btn');
           if (recBtn) recBtn.textContent = `⏹ Stop (${timerStr})`;
+          const camViewRecText = $('cam-view-rec-text');
+          if (camViewRecText) camViewRecText.textContent = `⏹ Stop (${timerStr})`;
         }
       } else {
         delete cameraRecordingStartTimes[cam.id];

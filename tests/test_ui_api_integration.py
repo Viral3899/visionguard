@@ -49,6 +49,9 @@ def test_ui_html_has_required_elements():
     assert 'id="recordings-body"' in content
     assert 'id="recording-video-player"' in content
     assert 'id="toggle-objects-btn"' in content
+    assert 'id="cam-view-controls"' in content
+    assert 'id="cam-view-rec-btn"' in content
+    assert 'id="cam-view-obj-btn"' in content
 
 
 def test_ui_js_has_recording_and_dedup_functions():
@@ -62,6 +65,10 @@ def test_ui_js_has_recording_and_dedup_functions():
     assert 'stopRecordingTimer' in content
     assert 'unique_people_5m' in content
     assert 'toggleObjectsDisplay' in content
+    assert 'cam-view-rec-btn' in content
+    assert 'cam-view-obj-btn' in content
+    assert 'cam-view-rec-text' in content
+    assert 'cam-view-obj-text' in content
 
 
 def test_camera_config_api_show_objects(test_client):

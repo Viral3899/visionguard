@@ -80,6 +80,14 @@
               <img id="video-feed" alt="Live camera video feed" class="hidden" />
               <svg id="draw-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-label="Zone editor" class="hidden"></svg>
               <div class="rec-badge hidden" id="rec-badge"><span class="rec-dot"></span> <span id="rec-timer">REC 00:00</span></div>
+              <div class="cam-view-overlay-controls" id="cam-view-controls">
+                <button class="cam-view-btn rec" id="cam-view-rec-btn" title="Toggle Recording for this camera (R)">
+                  <span class="rec-dot-pulse"></span> <span id="cam-view-rec-text">⏺ Record</span>
+                </button>
+                <button class="cam-view-btn obj" id="cam-view-obj-btn" title="Toggle Daily Object Bounding Boxes (O)">
+                  <span id="cam-view-obj-text">👁 Objects: ON</span>
+                </button>
+              </div>
             </div>
             <div class="ptz-controls-hud" id="ptz-controls-hud" aria-label="Digital PTZ Zoom Controls">
               <div class="ptz-btn-group">
