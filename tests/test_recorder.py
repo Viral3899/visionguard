@@ -79,10 +79,31 @@ def test_recorder_delete_recording(temp_dir, temp_db):
     completed = recorder.stop_recording('cam_3')
 
     filename = completed['filename']
-    assert (temp_dir / filename).is_file()
+    assert Path(completed['file_path']).is_file()
 
     # Delete via db/recorder helper
     deleted = temp_db.delete_recording(filename)
     assert deleted is True
-    assert not (temp_dir / filename).exists()
+    assert not Path(completed['file_path']).exists()
     assert len(temp_db.list_recordings()) == 0
+
+
+def test_recording_saved_in_camera_subfolder_with_timer(temp_dir, temp_db):
+    recorder = VideoRecorder(output_dir=temp_dir, db=temp_db)
+    cam_id = 'cam_hallway'
+    cam_name = 'Hallway East'
+    rec_info = recorder.start_recording(cam_id, cam_name, width=320, height=240, fps=10.0)
+
+    # Verify file path is in camera subfolder
+    file_path = Path(rec_info['file_path'])
+    assert file_path.parent.name == cam_id
+    assert file_path.parent == temp_dir / cam_id
+
+    # Write frames
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    for _ in range(12):
+        recorder.write_frame(cam_id, frame)
+        time.sleep(0.01)
+
+    completed = recorder.stop_recording(cam_id)
+    assert Path(completed['file_path']).is_file()

@@ -103,10 +103,14 @@ class CameraWorker:
             self.thread.join(timeout=10)
 
     def telemetry(self):
-        is_rec = bool(self.recorder and self.recorder.is_recording(self.camera['id']))
+        rec_status = self.recorder.get_status(self.camera['id']) if self.recorder else {}
+        is_rec = bool(rec_status.get('is_recording', False))
+        rec_duration = rec_status.get('duration_seconds', 0.0) if is_rec else 0.0
         return {'status': self.status, 'error': self.error, 'has_frame': self.latest() is not None,
                 'current_people': self.current_people, 'unique_people_5m': self.unique_people_5m,
                 'is_recording': is_rec,
+                'recording_duration': rec_duration,
+                'recording_start_time': rec_status.get('start_time') if is_rec else None,
                 'fps': round(self.fps, 1),
                 'last_frame_age_seconds': round(time.monotonic() - self.last_frame, 1) if self.last_frame else None}
 

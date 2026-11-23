@@ -734,11 +734,26 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
         user = require_user(request)
         if not re.fullmatch(r'rec_[A-Za-z0-9_\-]+_[0-9]{8}_[0-9]{6}_[0-9a-f]{6}\.mp4', filename):
             raise HTTPException(400, 'Invalid recording filename')
+        
+        # 1. Lookup in database for exact recorded file_path
+        rec = db.get_recording(filename)
+        if rec and rec.get('file_path'):
+            file_path = Path(rec['file_path'])
+            if file_path.is_file():
+                return FileResponse(file_path, media_type='video/mp4', filename=filename)
+
+        # 2. Check direct path in recordings root
         recordings_dir = settings.data_dir / 'recordings'
         file_path = recordings_dir / filename
-        if not file_path.is_file():
-            raise HTTPException(404, 'Recording file not found')
-        return FileResponse(file_path, media_type='video/mp4', filename=filename)
+        if file_path.is_file():
+            return FileResponse(file_path, media_type='video/mp4', filename=filename)
+
+        # 3. Check any camera subfolder
+        for match in recordings_dir.glob(f'*/{filename}'):
+            if match.is_file():
+                return FileResponse(match, media_type='video/mp4', filename=filename)
+
+        raise HTTPException(404, 'Recording file not found')
 
     @app.delete('/api/recordings/{filename}')
     async def delete_recording(filename: str, request: Request):
@@ -747,6 +762,16 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
             raise HTTPException(403, 'Only administrators can delete recordings')
         success = db.delete_recording(filename)
         if not success:
+            # Fallback file removal if record was missing from DB
+            recordings_dir = settings.data_dir / 'recordings'
+            candidate = recordings_dir / filename
+            if candidate.is_file():
+                candidate.unlink(missing_ok=True)
+                return {'ok': True, 'deleted': filename}
+            for match in recordings_dir.glob(f'*/{filename}'):
+                if match.is_file():
+                    match.unlink(missing_ok=True)
+                    return {'ok': True, 'deleted': filename}
             raise HTTPException(404, 'Recording not found')
         return {'ok': True, 'deleted': filename}
 

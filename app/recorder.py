@@ -75,6 +75,38 @@ class _RecordingSession:
             try:
                 if frame.shape[1] != self.width or frame.shape[0] != self.height:
                     frame = cv2.resize(frame, (self.width, self.height))
+
+                # Burn recording timer and timestamp onto the video frame
+                elapsed_sec = max(0.0, time.monotonic() - self.start_monotonic)
+                hrs = int(elapsed_sec // 3600)
+                mins = int((elapsed_sec % 3600) // 60)
+                secs = int(elapsed_sec % 60)
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                rec_str = f"REC {hrs:02d}:{mins:02d}:{secs:02d}"
+                hud_str = f"{rec_str} | {now_str} | {self.camera_name}"
+
+                font_scale = 0.46
+                (tw, th), _ = cv2.getTextSize(hud_str, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+                bx1, by1 = 10, 10
+                bx2, by2 = bx1 + tw + 26, by1 + th + 14
+
+                # Overlay dark banner with recording border
+                cv2.rectangle(frame, (bx1, by1), (bx2, by2), (12, 16, 24), -1)
+                cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 0, 220), 1)
+                # Red recording dot
+                cv2.circle(frame, (bx1 + 10, by1 + (th + 14) // 2), 4, (0, 0, 255), -1)
+                # Timer text
+                cv2.putText(
+                    frame,
+                    hud_str,
+                    (bx1 + 20, by1 + th + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+
                 self.writer.write(frame)
                 self.frames_written += 1
             except Exception as exc:
@@ -163,9 +195,11 @@ class VideoRecorder:
 
             rec_id = uuid4().hex
             timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-            safe_cam_id = "".join(c for c in camera_id if c.isalnum() or c in ('-', '_'))
+            safe_cam_id = "".join(c for c in camera_id if c.isalnum() or c in ('-', '_')) or 'default'
             filename = f"rec_{safe_cam_id}_{timestamp_str}_{rec_id[:6]}.mp4"
-            file_path = self.output_dir / filename
+            camera_dir = self.output_dir / safe_cam_id
+            camera_dir.mkdir(parents=True, exist_ok=True)
+            file_path = camera_dir / filename
 
             session = _RecordingSession(
                 recording_id=rec_id,
@@ -234,6 +268,7 @@ class VideoRecorder:
             'camera_id': camera_id,
             'recording_id': session.recording_id,
             'filename': session.filename,
+            'start_time': session.start_time,
             'duration_seconds': duration,
             'frames_written': session.frames_written,
         }
