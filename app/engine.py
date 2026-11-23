@@ -17,6 +17,114 @@ from .database import Database
 from .detectors import DetectionManager, draw_security_bounding_boxes
 from .incidents import IncidentTracker, eligible_event, draw_event_box
 from .person_tracker import PersonDeduplicator
+from .trajectory import TrajectoryTracker
+
+
+def draw_hud_overlay(
+    frame: np.ndarray,
+    counts: dict,
+    fps: float,
+    device_str: str = 'auto',
+    active_threat: bool = False
+) -> np.ndarray:
+    """Render top heads-up display overlay with active counters and status."""
+    if frame is None:
+        return frame
+    h, w = frame.shape[:2]
+    if h <= 0 or w <= 0:
+        return frame
+
+    # Prepare HUD counts
+    people = counts.get('people', 0)
+    vehicles = counts.get('vehicles', 0)
+    devices = counts.get('electronics', 0)
+    daily = counts.get('daily', 0)
+    threats = counts.get('threats', 0)
+    total = sum(counts.values())
+
+    hud_left = f"PEOPLE: {people}  |  VEHICLES: {vehicles}  |  DEVICES: {devices}  |  DAILY: {daily}  |  TOTAL: {total}"
+    fps_val = round(float(fps), 1)
+    device_display = "GPU" if "cuda" in str(device_str).lower() or device_str == "0" else device_str.upper()
+    hud_right = f"{fps_val} FPS | {device_display}"
+
+    # Draw top banner bar
+    bar_h = 28
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, 0), (w, bar_h), (10, 16, 26), -1)
+    cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
+    cv2.line(frame, (0, bar_h), (w, bar_h), (0, 0, 255) if active_threat else (40, 198, 245), 1)
+
+    # Left text: object statistics
+    font_scale = 0.42
+    cv2.putText(frame, hud_left, (12, 19), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (230, 240, 255), 1, cv2.LINE_AA)
+
+    # Security status badge
+    (rw, rh), _ = cv2.getTextSize(hud_right, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+    status_label = "[!] THREAT ALERT" if active_threat else "SECURE"
+    status_color = (0, 0, 255) if active_threat else (20, 220, 167)
+    (sw, sh), _ = cv2.getTextSize(status_label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+
+    right_x = max(10, w - rw - sw - 36)
+    if right_x > len(hud_left) * 6:
+        cv2.putText(frame, hud_right, (right_x, 19), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (160, 180, 200), 1, cv2.LINE_AA)
+        badge_x = w - sw - 14
+        cv2.rectangle(frame, (badge_x - 4, 4), (badge_x + sw + 4, 24), (14, 20, 30), -1)
+        cv2.rectangle(frame, (badge_x - 4, 4), (badge_x + sw + 4, 24), status_color, 1)
+        cv2.putText(frame, status_label, (badge_x, 19), cv2.FONT_HERSHEY_SIMPLEX, font_scale, status_color, 1, cv2.LINE_AA)
+
+    return frame
+
+
+def draw_interactive_zones(
+    frame: np.ndarray,
+    zone: list | None = None,
+    tripwire: list | None = None,
+    is_intruded: bool = False,
+    tripwire_crossed: bool = False
+) -> np.ndarray:
+    """Render zones and tripwires with reactive warning states."""
+    if frame is None:
+        return frame
+    h, w = frame.shape[:2]
+    if h <= 0 or w <= 0:
+        return frame
+
+    if isinstance(zone, list) and len(zone) >= 3:
+        try:
+            valid_zone = [p for p in zone if isinstance(p, (list, tuple)) and len(p) == 2]
+            if len(valid_zone) >= 3:
+                poly = np.array([(round(x * w), round(y * h)) for x, y in valid_zone], dtype=np.int32)
+                overlay = frame.copy()
+                fill_color = (0, 0, 220) if is_intruded else (48, 60, 200)
+                border_color = (0, 0, 255) if is_intruded else (75, 94, 255)
+                alpha = 0.35 if is_intruded else 0.18
+                cv2.fillPoly(overlay, [poly], fill_color)
+                cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, frame)
+                cv2.polylines(frame, [poly], True, border_color, 2, cv2.LINE_AA)
+                label = "[!] RESTRICTED ZONE INTRUSION" if is_intruded else "RESTRICTED"
+                label_color = (0, 0, 255) if is_intruded else (75, 94, 255)
+                cv2.putText(frame, label, tuple(poly[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.48, label_color, 2, cv2.LINE_AA)
+        except Exception:
+            pass
+
+    if isinstance(tripwire, list) and len(tripwire) == 2:
+        try:
+            p1, p2 = tripwire[0], tripwire[1]
+            if (isinstance(p1, (list, tuple)) and len(p1) == 2 and
+                isinstance(p2, (list, tuple)) and len(p2) == 2):
+                x1, y1 = p1
+                x2, y2 = p2
+                pt1 = (round(x1 * w), round(y1 * h))
+                pt2 = (round(x2 * w), round(y2 * h))
+                color = (0, 69, 255) if tripwire_crossed else (40, 198, 245)
+                cv2.line(frame, pt1, pt2, color, 3, cv2.LINE_AA)
+                label = "[!] TRIPWIRE CROSSED" if tripwire_crossed else "COUNT LINE"
+                cv2.putText(frame, label, (pt1[0], max(18, pt1[1] - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2, cv2.LINE_AA)
+        except Exception:
+            pass
+
+    return frame
 
 def event_meets_confidence_floor(event: dict, threshold: float = 0.50) -> bool:
     """Keep analytics events without model confidence; reject model scores below threshold.
@@ -83,6 +191,7 @@ class CameraWorker:
         self._last_frame_error = ''
         self._last_saved_event: dict[str, float] = {}
         self.detection_manager = DetectionManager()
+        self.trajectory_tracker = TrajectoryTracker(max_history=25, max_idle_seconds=5.0)
         self.incidents = IncidentTracker(settings.incident_min_confidence,
                                          settings.incident_confirmation_frames,
                                          max_missed_frames=max(2, settings.object_every_n_frames))
@@ -182,42 +291,62 @@ class CameraWorker:
                     result = model.track(frame, **args)[0]
                     persons = []
                     person_boxes = []
-                    if result.boxes is not None and result.boxes.id is not None:
-                        ids = result.boxes.id.int().cpu().tolist()
-                        boxes = result.boxes.xyxy.cpu().tolist()
-                        classes = result.boxes.cls.int().cpu().tolist()
-                        # Create a detection result for person tracking to use improved draw
-                        from .detectors import DetectionResult
-                        person_result = DetectionResult(
-                            boxes=boxes,
-                            classes=classes,
-                            confidences=(result.boxes.conf.cpu().tolist() if getattr(result.boxes, 'conf', None) is not None else [1.0]*len(boxes)),
-                            class_names=result.names if hasattr(result, 'names') else {0: 'person'}
-                        )
-                        # Draw person tracking with improved visuals
-                        for track_id, box, class_id in zip(ids, boxes, classes):
+                    if result.boxes is not None:
+                        boxes = result.boxes.xyxy.cpu().tolist() if hasattr(result.boxes.xyxy, 'cpu') else []
+                        classes = result.boxes.cls.int().cpu().tolist() if hasattr(result.boxes.cls, 'cpu') else []
+                        confidences = result.boxes.conf.cpu().tolist() if getattr(result.boxes, 'conf', None) is not None else [1.0] * len(boxes)
+                        if getattr(result.boxes, 'id', None) is not None:
+                            ids = result.boxes.id.int().cpu().tolist()
+                        else:
+                            ids = [None] * len(boxes)
+
+                        show_objects = bool(self.camera_config.get('show_objects', 1))
+                        for track_id, box, class_id, conf in zip(ids, boxes, classes, confidences):
                             x1, y1, x2, y2 = box
                             if class_id == 0:
-                                persons.append({'id': track_id, 'foot': ((x1+x2)/(2*w), y2/h),
+                                p_id = track_id if track_id is not None else 0
+                                persons.append({'id': p_id, 'foot': ((x1+x2)/(2*w), y2/h),
                                                 'bbox': [float(x1), float(y1), float(x2), float(y2)]})
                                 person_boxes.append([x1/w, y1/h, x2/w, y2/h])
-                        # Use the detector's draw method for better visuals
-                        color = (20, 220, 167)  # teal for persons
-                        # Draw only person class (class_id == 0) if show_objects is enabled
-                        show_objects = bool(self.camera_config.get('show_objects', 1))
-                        person_boxes_filtered = [b for b, c in zip(boxes, classes) if c == 0]
-                        person_classes_filtered = [c for c in classes if c == 0]
-                        person_conf_filtered = [conf for conf, c in zip(person_result.confidences, classes) if c == 0]
-                        if show_objects and person_boxes_filtered and hasattr(self.detection_manager, 'object_detector'):
-                            person_result_draw = DetectionResult(
-                                boxes=person_boxes_filtered,
-                                classes=person_classes_filtered,
-                                confidences=person_conf_filtered,
-                                class_names={0: 'person'}
-                            )
-                            # Use the detection manager's object detector to draw person boxes
-                            frame = self.detection_manager.object_detector.draw(frame, person_result_draw, color)
-                    
+
+                                if show_objects:
+                                    dwell_sec = self.trajectory_tracker.get_dwell_time(p_id, now=time.monotonic()) if track_id is not None else 0.0
+                                    dwell_str = f" ({int(dwell_sec)}s)" if dwell_sec >= 1.0 else ""
+                                    tid_str = f"#{track_id}" if track_id is not None else ""
+                                    label = f"PERSON {tid_str}{dwell_str} | {conf:.0%}".replace("  ", " ")
+                                    px1 = max(0, min(w - 1, int(round(x1))))
+                                    py1 = max(0, min(h - 1, int(round(y1))))
+                                    px2 = max(0, min(w - 1, int(round(x2))))
+                                    py2 = max(0, min(h - 1, int(round(y2))))
+                                    if px2 > px1 and py2 > py1:
+                                        p_color = (0, 190, 255) if (settings.enable_loitering_detection and dwell_sec > settings.loitering_time_seconds) else (20, 220, 167)
+                                        cv2.rectangle(frame, (px1, py1), (px2, py2), p_color, 2, cv2.LINE_AA)
+                                        clen = max(6, min(16, (px2 - px1) // 5, (py2 - py1) // 5))
+                                        cv2.line(frame, (px1, py1), (px1 + clen, py1), (255, 255, 255), 1, cv2.LINE_AA)
+                                        cv2.line(frame, (px1, py1), (px1, py1 + clen), (255, 255, 255), 1, cv2.LINE_AA)
+                                        cv2.line(frame, (px2, py1), (px2 - clen, py1), (255, 255, 255), 1, cv2.LINE_AA)
+                                        cv2.line(frame, (px2, py1), (px2, py1 + clen), (255, 255, 255), 1, cv2.LINE_AA)
+                                        cv2.line(frame, (px1, py2), (px1 + clen, py2), (255, 255, 255), 1, cv2.LINE_AA)
+                                        cv2.line(frame, (px1, py2), (px1, py2 - clen), (255, 255, 255), 1, cv2.LINE_AA)
+                                        cv2.line(frame, (px2, py2), (px2 - clen, py2), (255, 255, 255), 1, cv2.LINE_AA)
+                                        cv2.line(frame, (px2, py2), (px2 - clen, py2), (255, 255, 255), 1, cv2.LINE_AA)
+
+                                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1)
+                                        pad = 3
+                                        tag_y1 = max(0, py1 - th - 2 * pad)
+                                        tag_y2 = tag_y1 + th + 2 * pad
+                                        tag_x1 = px1
+                                        tag_x2 = min(w - 1, px1 + tw + 2 * pad)
+                                        cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), (14, 20, 30), -1)
+                                        cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), p_color, 1)
+                                        cv2.putText(frame, label, (tag_x1 + pad, tag_y2 - pad - 1),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 1, cv2.LINE_AA)
+
+                    # Update and draw trajectories
+                    if persons:
+                        self.trajectory_tracker.update(persons, now=time.monotonic())
+                        frame = self.trajectory_tracker.draw(frame)
+
                     # Run analytics (intrusion, tripwire)
                     events = analytics.process(persons)
 
@@ -254,14 +383,32 @@ class CameraWorker:
                     # This ALWAYS runs regardless of show_objects so alarming activity is never hidden
                     frame = draw_security_bounding_boxes(frame, all_events, persons=persons)
 
-                    self._draw_geometry(frame, w, h)
-                    hud_text = f'IN FRAME: {self.current_people} | 5M PASSERS: {self.unique_people_5m}'
-                    (bw, bh), _ = cv2.getTextSize(hud_text, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
-                    cv2.rectangle(frame, (12, 12), (18 + bw + 10, 16 + bh + 12), (10, 20, 34), -1)
-                    cv2.rectangle(frame, (12, 12), (18 + bw + 10, 16 + bh + 12), (40, 198, 245), 1)
-                    cv2.putText(frame, hud_text, (20, 16 + bh + 4),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
-                    
+                    # Interactive geometry (zone intrusion, tripwire crossing)
+                    is_intruded = any(e.get('type') in ('intrusion', 'restricted') for e in all_events)
+                    tripwire_crossed = any(e.get('type') in ('tripwire', 'tripwire_crossed') for e in all_events)
+                    frame = draw_interactive_zones(frame, self.camera.get('zone'), self.camera.get('tripwire'), is_intruded, tripwire_crossed)
+
+                    # Calculate category breakdown counts for HUD
+                    counts = {'people': len(persons), 'vehicles': 0, 'electronics': 0, 'daily': 0, 'threats': 0}
+                    if getattr(self.detection_manager, 'last_object_result', None):
+                        obj_res = self.detection_manager.last_object_result
+                        from .detectors import get_category_style
+                        for cls in obj_res.classes:
+                            cname = str(obj_res.class_names.get(cls, cls)).strip().lower()
+                            cat = get_category_style(cname)['category']
+                            if cat == 'vehicle':
+                                counts['vehicles'] += 1
+                            elif cat == 'electronics':
+                                counts['electronics'] += 1
+                            elif cat == 'daily':
+                                counts['daily'] += 1
+                    has_threat = any(item.get('type') in ('weapon', 'violence', 'fire_detected', 'smoke') or 'threat' in str(item.get('type', '')) for item in all_events)
+                    if has_threat:
+                        counts['threats'] += 1
+
+                    # Draw Top HUD Overlay
+                    frame = draw_hud_overlay(frame, counts, self.fps, settings.device, active_threat=has_threat)
+
                     # Show active detections on frame
                     self._draw_detection_status(frame, all_events)
 

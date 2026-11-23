@@ -57,12 +57,69 @@ CLASS_DISPLAY_NAMES = {
     'refrigerator': 'FRIDGE',
 }
 
+CATEGORY_MAP = {
+    # Vehicles
+    'bicycle': 'vehicle', 'car': 'vehicle', 'motorcycle': 'vehicle', 'airplane': 'vehicle',
+    'bus': 'vehicle', 'train': 'vehicle', 'truck': 'vehicle', 'boat': 'vehicle',
+    # Electronics / Gadgets
+    'cell phone': 'electronics', 'cellphone': 'electronics', 'mobile phone': 'electronics',
+    'phone': 'electronics', 'mobile': 'electronics', 'laptop': 'electronics', 'tv': 'electronics',
+    'tvmonitor': 'electronics', 'monitor': 'electronics', 'mouse': 'electronics',
+    'keyboard': 'electronics', 'remote': 'electronics', 'microwave': 'electronics',
+    'oven': 'electronics', 'toaster': 'electronics', 'refrigerator': 'electronics',
+    'powerbank': 'electronics', 'power bank': 'electronics',
+    # Daily items / Accessories
+    'backpack': 'daily', 'umbrella': 'daily', 'handbag': 'daily', 'tie': 'daily',
+    'suitcase': 'daily', 'bottle': 'daily', 'wine glass': 'daily', 'cup': 'daily',
+    'fork': 'daily', 'spoon': 'daily', 'bowl': 'daily', 'book': 'daily', 'clock': 'daily',
+    'vase': 'daily', 'scissors': 'daily', 'teddy bear': 'daily', 'hair drier': 'daily',
+    'toothbrush': 'daily', 'banana': 'daily', 'apple': 'daily', 'sandwich': 'daily',
+    'orange': 'daily', 'broccoli': 'daily', 'carrot': 'daily', 'hot dog': 'daily',
+    'pizza': 'daily', 'donut': 'daily', 'cake': 'daily', 'sports ball': 'daily',
+    'frisbee': 'daily', 'skis': 'daily', 'snowboard': 'daily', 'kite': 'daily',
+    'baseball bat': 'daily', 'baseball glove': 'daily', 'skateboard': 'daily',
+    'surfboard': 'daily', 'tennis racket': 'daily',
+    # Animals
+    'bird': 'animal', 'cat': 'animal', 'dog': 'animal', 'horse': 'animal', 'sheep': 'animal',
+    'cow': 'animal', 'elephant': 'animal', 'bear': 'animal', 'zebra': 'animal', 'giraffe': 'animal',
+    # Furniture
+    'chair': 'furniture', 'couch': 'furniture', 'potted plant': 'furniture',
+    'bed': 'furniture', 'dining table': 'furniture', 'toilet': 'furniture', 'sink': 'furniture',
+    # Person
+    'person': 'person',
+    # Threats / Weapons
+    'gun': 'threat', 'knife': 'threat', 'weapon': 'threat', 'pistol': 'threat',
+    'rifle': 'threat', 'blade': 'threat',
+    # Fire / Smoke
+    'fire': 'fire', 'smoke': 'fire', 'flame': 'fire',
+}
+
+CATEGORY_COLORS = {
+    'vehicle': (255, 165, 0),      # Cobalt Blue / Azure
+    'electronics': (220, 50, 220),  # Neon Violet / Purple
+    'daily': (0, 190, 255),        # Warm Amber / Gold
+    'animal': (50, 220, 50),       # Lime Green
+    'furniture': (180, 180, 120),  # Slate Sky
+    'person': (20, 220, 167),      # Vibrant Teal
+    'threat': (0, 0, 255),         # High-alert Red
+    'fire': (0, 69, 255),          # Blazing Orange / Red
+    'default': (235, 180, 30),     # Default Amber
+}
+
+
+def get_category_style(class_name: str) -> dict:
+    """Return category name, accent color (BGR), and display label for a class."""
+    cleaned = str(class_name).strip().lower()
+    cat = CATEGORY_MAP.get(cleaned, 'daily')
+    color = CATEGORY_COLORS.get(cat, CATEGORY_COLORS['default'])
+    display_name = CLASS_DISPLAY_NAMES.get(cleaned, cleaned.upper())
+    return {'category': cat, 'color': color, 'display_name': display_name}
+
 
 def format_daily_object_label(class_name: str, conf: float) -> str:
     """Format object name and explicit CF score (e.g. 'MOBILE | CF: 92%')."""
-    cleaned = str(class_name).strip().lower()
-    display_name = CLASS_DISPLAY_NAMES.get(cleaned, cleaned.upper())
-    return f"{display_name} | CF: {float(conf):.0%}"
+    style = get_category_style(class_name)
+    return f"{style['display_name']} | CF: {float(conf):.0%}"
 
 
 def draw_security_bounding_boxes(
@@ -1165,7 +1222,7 @@ class ObjectDetector(BaseDetector):
         self,
         frame: np.ndarray,
         result: DetectionResult,
-        color: tuple[int, int, int] = (235, 180, 30),
+        color: tuple[int, int, int] | None = None,
         thickness: int = 2,
         font_scale: float = 0.44
     ) -> np.ndarray:
@@ -1193,8 +1250,11 @@ class ObjectDetector(BaseDetector):
             if x2 <= x1 or y2 <= y1:
                 continue
 
+            style = get_category_style(class_name)
+            box_color = color if color is not None else style['color']
+
             # Draw sleek bounding box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, max(1, thickness), cv2.LINE_AA)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, max(1, thickness), cv2.LINE_AA)
 
             # Draw corner accents
             clen = max(6, min(16, (x2 - x1) // 5, (y2 - y1) // 5))
@@ -1217,7 +1277,7 @@ class ObjectDetector(BaseDetector):
             tag_x2 = min(w - 1, x1 + tw + 2 * pad)
 
             cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), (14, 20, 30), -1)
-            cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), color, 1)
+            cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), box_color, 1)
             cv2.putText(
                 frame,
                 label,

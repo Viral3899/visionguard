@@ -1,25 +1,28 @@
-# VisionGuard — Python 3.12 Multi-Camera GPU Deployment + Auto-Training
+# VisionGuard — Advanced Multi-Category AI Vision & 1-Click Turnkey Deployment
 
-This version adds **independent per-camera recording controls, camera-specific subfolder storage with burned-in on-video timers, 80-class daily life object detection, and a detection display toggle with persistent threat alerts** to the VisionGuard surveillance dashboard.
+This version adds **automated 1-click Windows setup (`setup.bat`), high-visibility multi-category bounding boxes across all 80 COCO classes, real-time motion trajectory trails, dwell-time counters, interactive zone/tripwire reactive states, skeleton pose overlay, and a live detection summary HUD**.
 
-### Key New Features
-- **Independent Per-Camera Recording:** Every camera tile in the live matrix and focus view has its own dedicated Record/Stop button (`⏺ Rec` / `⏹ Stop (00:15)`) with active live timers. Multiple cameras can be recorded concurrently without cross-camera interference.
-- **Dedicated Subfolder Storage & Burned-In Timers:** Video clips are automatically stored in camera-specific folders (`data/recordings/<camera_id>/`). Every recorded frame has an immutable recording banner burned directly into the video (`● REC HH:MM:SS | YYYY-MM-DD HH:MM:SS | Camera Name`).
-- **Daily Life Object Detection:** YOLOv8 object detection detects common everyday objects (backpacks, cell phones, laptops, bottles, vehicles, pets, furniture, etc.) alongside people.
-- **Detection Display Toggle with Guaranteed Alarming Activity:** A button (`👁 Objects: ON/OFF`) allows operators to toggle everyday bounding boxes on or off to reduce visual clutter. **Alarming security activities (weapons, violence/fights, fire, smoke, intrusions, falls) ALWAYS remain fully visible with high-visibility alert boxes regardless of the toggle state.**
+### Key Features
+- **1-Click First-Time Setup (`setup.bat`):** Automatic Python environment provisioning (`.venv`), hardware acceleration detection (NVIDIA CUDA or CPU fallback), dependency installation, automated Hugging Face & Ultralytics model downloads, and verification.
+- **Full-Spectrum Multi-Category Bounding Boxes:** Detects all 80 standard COCO classes (vehicles, electronics, everyday accessories, animals, furniture) alongside people and security threats. Features category-specific color coding (Teal for people, Azure for vehicles, Violet for electronics, Amber for everyday items, Green for animals, Red for threats) with sleek corner bracket accents and badges.
+- **Motion Trajectory Trails:** Displays 25-frame historical motion tails with antialiased fading lines and leading locator dots to visualize movement paths and speed direction.
+- **Dwell Time & Loitering Clocks:** Live on-screen timer displayed per tracked individual (e.g. `PERSON #2 (00:45s) | 94%`), shifting to warning amber if exceeding loitering thresholds.
+- **Interactive Tripwires & Restricted Zones:** Polygon zones and count lines react dynamically to intrusions—instantly turning glowing red with on-screen alert banners when breached.
+- **Live Detection Summary HUD:** Persistent glassmorphism heads-up display at the top of the video feed showing real-time object breakdowns (`PEOPLE: X | VEHICLES: Y | DEVICES: Z | DAILY: N | TOTAL: T`), live FPS, GPU/CPU acceleration, and security shield status.
+- **Independent Per-Camera Recording:** Every camera tile in the live matrix and focus view has its own dedicated Record/Stop button (`⏺ Rec` / `⏹ Stop (00:15)`) with active live timers and dedicated camera-specific subfolder storage.
+- **Alarms Guarantee:** High-priority security threats (weapons, violence/fights, fire, smoke, falls, intrusions) ALWAYS remain visible with high-contrast alert boxes regardless of UI display toggles.
 
-## Start here (Windows)
+## Quick Start (Windows 1-Click)
 
-1. Install **Python 3.12 64-bit** and a current NVIDIA driver. Extract to a short local folder path.
-2. **One-click full setup and automatic training:** `ONE_CLICK_SETUP_TRAIN_DEPLOY.bat` (license-review prompts and internet required; may need many GB disk and long GPU processing).
-3. **Quick pretrained-model setup without training:** `SETUP_MODELS_ONLY.bat`.
-4. **Configure multiple cameras or smartphone:** 
-   - Use **`CONNECT_PHONE_CAMERA_WINDOWS.bat`** (or `python phone_camera_setup.py`) to auto-detect and connect **Windows 11 Phone Link ("Connected Camera")**, USB webcams, or Wi-Fi IP streams. See **`PHONE_CAMERA_GUIDE.md`**.
-   - Or run `CONFIGURE_CAMERAS_WINDOWS.bat` / create `cameras.json` from `cameras.example.json`.
-5. **Normal live inference, no training:** `INFERENCE_MULTI_CAMERA.bat`. **Offline video inference:** `INFERENCE_VIDEO.bat` or `python inference.py --mode video --input clip.mp4`.
-6. **Train separately any time:** `TRAIN_ALL_MODELS.bat`.
-7. **Readiness checks:** `VERIFY_MULTI_CAMERA.bat`.
-8. **Optional trained-model activation after real, separately labeled CCTV tests:** `ACTIVATE_TRAINED_MODELS_AFTER_REVIEW.bat`.
+1. Double-click **`setup.bat`**.
+   - Automatically builds `.venv` with 64-bit Python.
+   - Detects NVIDIA GPU via `nvidia-smi` and installs PyTorch with CUDA (or CPU fallback).
+   - Installs all dependencies from `requirements.txt`.
+   - Downloads and verifies all required AI models into `models/` (`yolov8n.pt`, `yolov8n-pose.pt`, `yolov26-fire-smoke.pt`, `threat-yolov8n.pt`, `fight-yolov8-nano.pt`).
+   - Automatically initializes `.env` configuration.
+   - Prompts you to start the live surveillance server immediately.
+2. Open dashboard at **`http://127.0.0.1:8000`**.
+3. On future runs, simply double-click **`run.bat`**.
 
 Open dashboard at `http://127.0.0.1:8000` by default. Generated admin credentials are saved in `.env` on the first install. Never expose the dashboard or camera credentials to the public internet.
 
