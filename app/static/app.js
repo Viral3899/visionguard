@@ -56,14 +56,89 @@ async function checkSession() {
   return session.authenticated;
 }
 
+// Buzzer audio and urgent speech alert system
+let buzzerAudio = null;
+let buzzerTimer = null;
+
+function initAudio() {
+  if (!buzzerAudio) {
+    buzzerAudio = new Audio('/api/alerts/buzzer.mp3');
+    buzzerAudio.loop = true;
+  }
+}
+
+function playBuzzerSiren(durationSeconds=10) {
+  initAudio();
+  if (!buzzerAudio) return;
+  try {
+    if (buzzerTimer) {
+      clearTimeout(buzzerTimer);
+      buzzerTimer = null;
+    }
+    buzzerAudio.currentTime = 0;
+    const p = buzzerAudio.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(e => console.debug('Autoplay note:', e));
+    }
+    buzzerTimer = setTimeout(() => {
+      try {
+        buzzerAudio.pause();
+        buzzerAudio.currentTime = 0;
+      } catch (e) {}
+      buzzerTimer = null;
+    }, durationSeconds * 1000);
+  } catch (err) {
+    console.warn('Buzzer playback error:', err);
+  }
+}
+
+function speakUrgentAlert(kind, cameraName) {
+  if (!('speechSynthesis' in window)) return;
+  const k = String(kind || '').toLowerCase();
+  const cam = cameraName ? `at ${cameraName}` : '';
+  let phrase = '';
+  if (k.includes('fire')) {
+    phrase = `Fire! Fire! Fire! Fire detected ${cam}.`;
+  } else if (k.includes('smoke')) {
+    phrase = `Fire! Smoke! Fire! Smoke detected ${cam}.`;
+  } else if (k.includes('viol') || k.includes('fight') || k.includes('assault')) {
+    phrase = `Violence! Violence! Violence! Violence detected ${cam}.`;
+  } else if (k.includes('weap') || k.includes('knife') || k.includes('gun')) {
+    phrase = `Weapon! Weapon! Weapon! Weapon detected ${cam}.`;
+  } else if (k.includes('intr')) {
+    phrase = `Intrusion! Intrusion! Intrusion! Zone intrusion ${cam}.`;
+  } else if (k.includes('fall')) {
+    phrase = `Emergency! Fall! Fall! Fall detected ${cam}.`;
+  } else {
+    phrase = `Alert! Alert! Alert! Security incident ${cam}.`;
+  }
+
+  try {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(phrase);
+    utter.rate = 1.05;
+    utter.pitch = 1.1;
+    utter.volume = 1.0;
+    window.speechSynthesis.speak(utter);
+  } catch (err) {
+    console.warn('Speech synthesis error:', err);
+  }
+}
+
 async function refreshCameras() {
   const container = $('camera-list');
   try {
-  const cams = await req('/api/cameras');
-  state.cameras = cams;
-  if (!cams.some(c => c.id === state.selected)) state.selected = cams[0]?.id || null;
-  renderCameraList(); renderCameraGrid(); renderSelected(); renderDetectionConfig();
-  if(state.role==='admin') loadClients().catch(()=>{});
+    const cams = await req('/api/cameras');
+    state.cameras = cams;
+    if (!cams.some(c => c.id === state.selected)) state.selected = cams[0]?.id || null;
+    renderCameraList();
+    if (state.viewMode === 'grid') {
+      renderCameraGrid();
+    } else {
+      renderSelected();
+    }
+    renderDetectionConfig();
+    if (state.role === 'admin') loadClients().catch(() => {});
   } catch (error) {
     container.innerHTML = `<div class="camera-load-error"><b>Could not load cameras</b><small>${esc(error.message)}</small><button class="outline-btn" id="retry-cameras">Retry</button></div>`;
     $('retry-cameras')?.addEventListener('click', () => refreshCameras().catch(() => {}));
@@ -76,7 +151,7 @@ function renderCameraList() {
   if (!state.cameras.length) { container.innerHTML = '<p class="muted small" style="padding:0 12px">No cameras configured</p>'; return; }
   container.innerHTML = state.cameras.map(cam => `
     <button class="camera-row ${state.selected === cam.id ? 'active':''}" data-cam="${esc(cam.id)}">
-      <span class="cam-icon">▣</span><span class="cam-text"><b>${esc(cam.name)}</b><small>${esc(cam.status)} · ${cam.current_people || 0} people</small></span>
+      <span class="cam-icon">▣</span><span class="cam-text"><b>${esc(cam.name)}</b><small>${esc(cam.status)} · ${cam.current_people || 0} in view · 5m: ${cam.unique_people_5m || 0} ${cam.is_recording ? '· <span style="color:#ff4466">● REC</span>' : ''}</small></span>
       <i class="light ${dotClass(cam.status)}"></i>
     </button>`).join('');
   container.querySelectorAll('[data-cam]').forEach(btn => btn.onclick = () => {
@@ -88,42 +163,80 @@ function renderCameraList() {
 function renderSelected(force=false) {
   const cam = getCam();
   const video = $('video-feed');
+  if (!video) return;
   $('selected-title').textContent = cam?.name || 'Camera preview';
   $('selected-subtitle').textContent = cam ? `${cam.source} · ${cam.error || 'AI-powered live monitoring'}` : 'Select a camera to view analytics';
   $('selected-status').textContent = (cam?.status || 'NO SIGNAL').toUpperCase();
   $('selected-status').className = 'status-pill ' + (cam?.status || '').toLowerCase().replace(/[^a-z]/g,'');
-  $('current-count').textContent = `${cam?.current_people || 0} people`;
+  $('current-count').textContent = `${cam?.current_people || 0} in view · ${cam?.unique_people_5m || 0} (5m dedup)`;
   $('current-fps').textContent = `${cam?.fps || 0} FPS`;
+
+  const recBtn = $('record-camera-btn');
+  const recToolBtn = $('record-camera-tool-btn');
+  const isRec = Boolean(cam?.is_recording);
+  if (recBtn) {
+    recBtn.textContent = isRec ? '⏹ Stop Recording' : '⏺ Record';
+    recBtn.classList.toggle('recording-active', isRec);
+    recBtn.disabled = !cam || !cam.enabled;
+  }
+  if (recToolBtn) {
+    recToolBtn.textContent = isRec ? '⏹ Stop Recording' : '⏺ Start Recording';
+    recToolBtn.classList.toggle('recording-active', isRec);
+    recToolBtn.disabled = !cam || !cam.enabled;
+  }
+  if (isRec) {
+    if (!recordingTimerInterval) startRecordingTimer();
+  } else {
+    stopRecordingTimer();
+  }
+
   $('draw-zone').disabled = $('draw-line').disabled = !cam;
   $('remove-zone').disabled = !cam || !cam.zone?.length;
   $('remove-line').disabled = !cam || !cam.tripwire?.length;
   $('toggle-camera').disabled = $('delete-camera').disabled = $('edit-camera').disabled = $('test-camera').disabled = !cam;
   $('delete-camera').classList.toggle('hidden', state.role !== 'admin'); $('edit-camera').classList.toggle('hidden', state.role !== 'admin');
   $('toggle-camera').textContent = cam?.enabled ? 'Pause camera' : 'Resume camera';
+
+  if (state.viewMode !== 'focus') {
+    return;
+  }
+
   const next = cam?.enabled ? cam.id : null;
   const activeId = video.dataset.source || null;
   if (force || activeId !== next) {
     video.dataset.source = next || '';
-    video.classList.add('hidden');
-    $('video-empty').classList.remove('hidden');
-    $('video-empty').querySelector('h3').textContent = next ? 'Connecting to camera…' : 'No active video feed';
-    $('video-empty').querySelector('p').textContent = next ? (cam?.error || 'Waiting for the first processed frame…') : 'Add an RTSP stream, USB webcam or a video file to start.';
     if (next) {
+      $('video-empty').classList.add('hidden');
+      video.classList.remove('hidden');
       video.onerror = () => {
-        if (video.dataset.source !== next) return;
+        if (video.dataset.source !== next || state.viewMode !== 'focus') return;
         $('video-empty').classList.remove('hidden');
         $('video-empty').querySelector('h3').textContent = 'Connecting to camera…';
         $('video-empty').querySelector('p').textContent = cam?.error || 'Waiting for camera frames. Check the source URL and camera status.';
-        setTimeout(() => { if (video.dataset.source === next) video.src = `/stream/${encodeURIComponent(next)}?v=${Date.now()}`; }, 3000);
+        setTimeout(() => {
+          if (video.dataset.source === next && state.viewMode === 'focus') {
+            video.src = `/stream/${encodeURIComponent(next)}`;
+          }
+        }, 3000);
       };
       video.onload = () => {
         if (video.dataset.source !== next) return;
-        video.classList.remove('hidden'); $('video-empty').classList.add('hidden');
-        if (video.naturalWidth && video.naturalHeight) $('video-display').style.aspectRatio = `${video.naturalWidth} / ${video.naturalHeight}`;
+        video.classList.remove('hidden');
+        $('video-empty').classList.add('hidden');
+        if (video.naturalWidth && video.naturalHeight) {
+          $('video-display').style.aspectRatio = `${video.naturalWidth} / ${video.naturalHeight}`;
+        }
         ptzController.reset();
       };
-      video.src = `/stream/${encodeURIComponent(next)}?v=${Date.now()}`;
-    } else { video.removeAttribute('src'); ptzController.reset(); }
+      video.src = `/stream/${encodeURIComponent(next)}`;
+    } else {
+      video.removeAttribute('src');
+      video.classList.add('hidden');
+      $('video-empty').classList.remove('hidden');
+      $('video-empty').querySelector('h3').textContent = 'No active video feed';
+      $('video-empty').querySelector('p').textContent = 'Add an RTSP stream, USB webcam or a video file to start.';
+      ptzController.reset();
+    }
   }
   $('video-stamp').classList.toggle('hidden', !cam || !cam.enabled);
   renderDetectionBadges(cam);
@@ -153,9 +266,22 @@ function setViewMode(mode, cameraId=null) {
   }
 
   if (isGrid) {
+    // Detach focus stream to immediately free the connection
+    const video = $('video-feed');
+    if (video) {
+      video.removeAttribute('src');
+      video.dataset.source = '';
+    }
     ptzController.reset();
-    renderCameraGrid();
+    renderCameraGrid(true);
   } else {
+    // Detach all grid streams to prevent socket starvation
+    const grid = $('camera-matrix-grid');
+    if (grid) {
+      grid.querySelectorAll('img.tile-stream').forEach(img => {
+        img.removeAttribute('src');
+      });
+    }
     renderSelected(true);
     renderDetectionConfig();
   }
@@ -172,7 +298,7 @@ function switchToFocusView(camId) {
   $('workspace-grid')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function renderCameraGrid() {
+function renderCameraGrid(forceRebuild=false) {
   const grid = $('camera-matrix-grid');
   if (!grid) return;
   if (!state.cameras.length) {
@@ -189,64 +315,89 @@ function renderCameraGrid() {
 
   grid.className = 'camera-matrix-grid layout-' + state.gridLayout;
 
-  grid.innerHTML = state.cameras.map(cam => {
-    const isOnline = ['online', 'connecting', 'reconnecting'].includes(cam.status);
-    const streamSrc = cam.enabled ? `/stream/${encodeURIComponent(cam.id)}?v=${Date.now()}` : '';
-    const isSelected = cam.id === state.selected;
-    const cfg = cam.config || {};
-    const badges = [];
-    if (cfg.fire_enabled) badges.push('<span class="detection-badge fire" style="font-size:9px;padding:2px 5px">🔥 Fire</span>');
-    if (cfg.violence_enabled) badges.push('<span class="detection-badge violence" style="font-size:9px;padding:2px 5px">⚔ Weapon</span>');
-    if (cfg.anomaly_enabled) badges.push('<span class="detection-badge anomaly" style="font-size:9px;padding:2px 5px">🧍 Anomaly</span>');
+  const currentTiles = grid.querySelectorAll('.camera-tile');
+  const existingIds = Array.from(currentTiles).map(t => t.dataset.tileId).join(',');
+  const newIds = state.cameras.map(c => c.id).join(',');
 
-    return `
-      <div class="camera-tile ${isSelected ? 'active-selected' : ''}" data-tile-id="${esc(cam.id)}" title="Double-click to open full view with PTZ controls (${esc(cam.name)})">
-        <div class="tile-top-bar">
-          <div class="tile-title-group">
-            <i class="light ${dotClass(cam.status)}"></i>
-            <span class="tile-name">${esc(cam.name)}</span>
+  if (forceRebuild || existingIds !== newIds) {
+    grid.innerHTML = state.cameras.map(cam => {
+      const isOnline = ['online', 'connecting', 'reconnecting'].includes(cam.status);
+      const streamSrc = (state.viewMode === 'grid' && cam.enabled) ? `/stream/${encodeURIComponent(cam.id)}` : '';
+      const isSelected = cam.id === state.selected;
+      const cfg = cam.config || {};
+      const badges = [];
+      if (cfg.fire_enabled) badges.push('<span class="detection-badge fire" style="font-size:9px;padding:2px 5px">🔥 Fire</span>');
+      if (cfg.violence_enabled) badges.push('<span class="detection-badge violence" style="font-size:9px;padding:2px 5px">⚔ Weapon</span>');
+      if (cfg.anomaly_enabled) badges.push('<span class="detection-badge anomaly" style="font-size:9px;padding:2px 5px">🧍 Anomaly</span>');
+
+      return `
+        <div class="camera-tile ${isSelected ? 'active-selected' : ''}" data-tile-id="${esc(cam.id)}" title="Double-click to open full view with PTZ controls (${esc(cam.name)})">
+          <div class="tile-top-bar">
+            <div class="tile-title-group">
+              <i class="light ${dotClass(cam.status)}"></i>
+              <span class="tile-name">${esc(cam.name)}</span>
+            </div>
+            <div class="tile-stats">
+              ${cam.is_recording ? '<span class="tile-rec-dot">● REC</span>' : ''}
+              <span>👥 ${cam.current_people || 0}</span>
+              <span>5m: ${cam.unique_people_5m || 0}</span>
+              <span>${cam.fps || 0} FPS</span>
+            </div>
           </div>
-          <div class="tile-stats">
-            <span>👥 ${cam.current_people || 0}</span>
-            <span>${cam.fps || 0} FPS</span>
+          ${cam.enabled ? `
+            <img class="tile-stream" ${streamSrc ? `src="${streamSrc}"` : ''} alt="${esc(cam.name)} stream"
+                 onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';"
+                 onload="this.style.display='block'; if(this.nextElementSibling) this.nextElementSibling.style.display='none';" />
+            <div class="tile-placeholder" style="display:none">
+              <div class="tile-placeholder-icon">▣</div>
+              <b>${esc(cam.name)}</b>
+              <small>${esc(cam.error || 'Awaiting video feed…')}</small>
+            </div>
+          ` : `
+            <div class="tile-placeholder">
+              <div class="tile-placeholder-icon">⏸</div>
+              <b>${esc(cam.name)}</b>
+              <small>Camera paused</small>
+            </div>
+          `}
+          <div class="tile-bottom-bar">
+            <div class="tile-badges">${badges.join(' ')}</div>
+            <div class="tile-dblclick-hint">Double-click to open ↗</div>
           </div>
         </div>
-        ${cam.enabled ? `
-          <img class="tile-stream" src="${streamSrc}" alt="${esc(cam.name)} stream"
-               onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';"
-               onload="this.style.display='block'; if(this.nextElementSibling) this.nextElementSibling.style.display='none';" />
-          <div class="tile-placeholder" style="display:none">
-            <div class="tile-placeholder-icon">▣</div>
-            <b>${esc(cam.name)}</b>
-            <small>${esc(cam.error || 'Awaiting video feed…')}</small>
-          </div>
-        ` : `
-          <div class="tile-placeholder">
-            <div class="tile-placeholder-icon">⏸</div>
-            <b>${esc(cam.name)}</b>
-            <small>Camera paused</small>
-          </div>
-        `}
-        <div class="tile-bottom-bar">
-          <div class="tile-badges">${badges.join(' ')}</div>
-          <div class="tile-dblclick-hint">Double-click to open ↗</div>
-        </div>
-      </div>
-    `;
-  }).join('');
+      `;
+    }).join('');
 
-  grid.querySelectorAll('.camera-tile').forEach(tile => {
-    const camId = tile.dataset.tileId;
-    tile.onclick = (e) => {
-      state.selected = camId;
-      grid.querySelectorAll('.camera-tile').forEach(t => t.classList.toggle('active-selected', t.dataset.tileId === camId));
-      renderCameraList();
-    };
-    tile.ondblclick = (e) => {
-      e.preventDefault();
-      switchToFocusView(camId);
-    };
-  });
+    grid.querySelectorAll('.camera-tile').forEach(tile => {
+      const camId = tile.dataset.tileId;
+      tile.onclick = (e) => {
+        state.selected = camId;
+        grid.querySelectorAll('.camera-tile').forEach(t => t.classList.toggle('active-selected', t.dataset.tileId === camId));
+        renderCameraList();
+      };
+      tile.ondblclick = (e) => {
+        e.preventDefault();
+        switchToFocusView(camId);
+      };
+    });
+  } else {
+    // In-place update: never re-assign active src to avoid tearing down connections
+    state.cameras.forEach(cam => {
+      const tile = grid.querySelector(`[data-tile-id="${cam.id}"]`);
+      if (!tile) return;
+      tile.classList.toggle('active-selected', cam.id === state.selected);
+      const nameEl = tile.querySelector('.tile-name');
+      if (nameEl) nameEl.textContent = cam.name;
+      const lightEl = tile.querySelector('.light');
+      if (lightEl) lightEl.className = 'light ' + dotClass(cam.status);
+      const statsEl = tile.querySelector('.tile-stats');
+      if (statsEl) statsEl.innerHTML = `${cam.is_recording ? '<span class="tile-rec-dot">● REC</span>' : ''}<span>👥 ${cam.current_people || 0}</span><span>5m: ${cam.unique_people_5m || 0}</span><span>${cam.fps || 0} FPS</span>`;
+      const img = tile.querySelector('img.tile-stream');
+      if (state.viewMode === 'grid' && cam.enabled && img && !img.getAttribute('src')) {
+        img.src = `/stream/${encodeURIComponent(cam.id)}`;
+      }
+    });
+  }
 }
 
 const ptzController = {
@@ -442,6 +593,7 @@ async function refreshStats() {
   $('stat-online').textContent = `${s.online} / ${s.cameras}`;
   $('stat-cameras-detail').textContent = `${s.cameras - s.online} awaiting signal`;
   $('stat-people').textContent = s.current_people;
+  if ($('stat-passers')) $('stat-passers').textContent = s.unique_people_5m || 0;
   $('stat-intrusions').textContent = s.intrusions_24h;
   $('stat-crossings').textContent = s.entered + s.exited;
   $('stat-crossings-detail').textContent = `${s.entered} entries / ${s.exited} exits`;
@@ -566,6 +718,11 @@ function connectWS(){
       if(payload.type==='event'){
         const event=payload.event;
         toast(`${kindTitle[event.kind] || event.kind} at ${event.camera_name}`);
+        const isSecurity = ['fire_detected','smoke','heat_source','violence','weapon','fight','knife','gun','assault','intrusion','fall_detected','unusual_activity'].includes(event.kind);
+        if (isSecurity) {
+          playBuzzerSiren(10);
+          speakUrgentAlert(event.kind, event.camera_name);
+        }
         refreshEvents().catch(console.warn); refreshStats().catch(console.warn);
       }
     } catch(e){ console.warn(e); }
@@ -643,10 +800,12 @@ async function updateCameraConfig(key, value) {
 
 // Alert config
 async function testTTS() {
+  playBuzzerSiren(10);
+  speakUrgentAlert('fire', 'Test Camera');
   try {
     const res = await req('/api/alerts/test', { method: 'POST', body: JSON.stringify({ camera_id: getCam()?.id }) });
-    if (res.results?.tts) {
-      toast('Voice siren test triggered!');
+    if (res.results?.tts || res.results?.buzzer) {
+      toast('Voice siren & 10s buzzer test triggered!');
     } else {
       toast('TTS test failed. Check pyttsx3 installation.', true);
     }
@@ -654,15 +813,23 @@ async function testTTS() {
 }
 
 async function testAllAlerts() {
+  playBuzzerSiren(10);
+  speakUrgentAlert('violence', 'Test Camera');
   const resultsEl = $('alert-test-results');
   resultsEl.classList.remove('hidden');
-  resultsEl.innerHTML = '<p>Testing local voice alert...</p>'; 
+  resultsEl.innerHTML = '<p>Testing 10s buzzer sound and urgent voice alert...</p>'; 
   try {
     const res = await req('/api/alerts/test', { method: 'POST', body: JSON.stringify({ camera_id: getCam()?.id }) });
     const r = res.results || {};
     resultsEl.innerHTML = `
+      <div class="test-result ${r.buzzer ? 'pass' : 'fail'}">
+        <span>${r.buzzer ? '✓' : '✗'}</span> Buzzer Sound (10s): ${r.buzzer ? 'Playing buzzer MP3 (10s)' : 'Failed'}
+      </div>
       <div class="test-result ${r.tts ? 'pass' : 'fail'}">
-        <span>${r.tts ? '✓' : '✗'}</span> Voice Siren (TTS): ${r.tts ? 'Triggered' : 'Failed or not enabled'}
+        <span>${r.tts ? '✓' : '✗'}</span> Voice Siren (TTS): ${r.tts ? 'Triggered urgent speech' : 'Failed or not enabled'}
+      </div>
+      <div class="test-result ${r.telegram ? 'pass' : 'fail'}">
+        <span>${r.telegram ? '✓' : '✗'}</span> Telegram: ${r.telegram ? 'Sent test message' : 'Disabled / not configured'}
       </div>
     `;
     toast('Alert test completed');
@@ -712,6 +879,120 @@ async function runUploadedVideoTest(event) {
     toast('Video analysis completed.');
   } catch (err) { results.innerHTML = `<p class="error">${esc(err.message)}</p>`; results.classList.remove('hidden'); toast(err.message, true); }
   finally { progress.classList.add('hidden'); button.disabled = false; button.textContent = 'Upload & analyse'; }
+}
+
+// Video recording controls
+let recordingTimerInterval = null;
+let recordingStartTime = 0;
+
+async function toggleRecording(cameraId) {
+  const cam = cameraId ? state.cameras.find(c => c.id === cameraId) : getCam();
+  if (!cam) return toast('Select a camera to record', true);
+
+  const isRec = Boolean(cam.is_recording);
+  try {
+    if (isRec) {
+      const res = await req(`/api/cameras/${encodeURIComponent(cam.id)}/recording/stop`, { method: 'POST' });
+      cam.is_recording = false;
+      toast(`Recording saved: ${res.filename} (${res.duration_seconds}s, ${Math.round((res.file_size_bytes || 0) / 1024)} KB)`);
+      stopRecordingTimer();
+      await refreshRecordings();
+    } else {
+      const res = await req(`/api/cameras/${encodeURIComponent(cam.id)}/recording/start`, { method: 'POST' });
+      cam.is_recording = true;
+      toast(`Recording started for ${cam.name}`);
+      startRecordingTimer();
+    }
+    renderSelected();
+    renderCameraList();
+    if (state.viewMode === 'grid') renderCameraGrid();
+  } catch (err) {
+    toast(`Recording error: ${err.message}`, true);
+  }
+}
+
+function startRecordingTimer() {
+  if (recordingTimerInterval) clearInterval(recordingTimerInterval);
+  recordingStartTime = Date.now();
+  $('rec-badge')?.classList.remove('hidden');
+  recordingTimerInterval = setInterval(() => {
+    const elapsedSec = Math.floor((Date.now() - recordingStartTime) / 1000);
+    const m = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+    const s = String(elapsedSec % 60).padStart(2, '0');
+    if ($('rec-timer')) $('rec-timer').textContent = `REC ${m}:${s}`;
+  }, 1000);
+}
+
+function stopRecordingTimer() {
+  if (recordingTimerInterval) {
+    clearInterval(recordingTimerInterval);
+    recordingTimerInterval = null;
+  }
+  $('rec-badge')?.classList.add('hidden');
+  if ($('rec-timer')) $('rec-timer').textContent = 'REC 00:00';
+}
+
+async function refreshRecordings() {
+  const tbody = $('recordings-body');
+  if (!tbody) return;
+  try {
+    const recs = await req('/api/recordings');
+    const counter = $('recordings-counter');
+    if (counter) counter.textContent = `${recs.length} clip${recs.length === 1 ? '' : 's'}`;
+
+    if (!recs.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">No recordings yet. Click "Record" on any camera to save video clips.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = recs.map(r => {
+      const sizeKB = Math.round((r.file_size_bytes || 0) / 1024);
+      const sizeMB = (sizeKB / 1024).toFixed(1);
+      const sizeStr = sizeKB > 1024 ? `${sizeMB} MB` : `${sizeKB} KB`;
+      return `<tr>
+        <td><strong>${esc(r.camera_name || r.camera_id)}</strong></td>
+        <td><code>${esc(r.filename)}</code></td>
+        <td>${fmtTime(r.created_at || r.start_time)}</td>
+        <td>${r.duration_seconds || 0}s</td>
+        <td>${sizeStr}</td>
+        <td>
+          <button class="outline-btn small-btn play-rec-btn" data-filename="${esc(r.filename)}">▶ Play</button>
+          <a class="outline-btn small-btn" href="/api/recordings/${encodeURIComponent(r.filename)}" download="${esc(r.filename)}">↓ Download</a>
+          ${state.role === 'admin' ? `<button class="danger-soft small-btn del-rec-btn" data-filename="${esc(r.filename)}">✕ Delete</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+
+    tbody.querySelectorAll('.play-rec-btn').forEach(btn => {
+      btn.onclick = () => playRecordingModal(btn.dataset.filename);
+    });
+    tbody.querySelectorAll('.del-rec-btn').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm(`Delete recording ${btn.dataset.filename}?`)) return;
+        try {
+          await req(`/api/recordings/${encodeURIComponent(btn.dataset.filename)}`, { method: 'DELETE' });
+          toast('Recording deleted');
+          await refreshRecordings();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      };
+    });
+  } catch (err) {
+    console.warn('Failed to load recordings:', err);
+  }
+}
+
+function playRecordingModal(filename) {
+  const container = $('recording-player-container');
+  const video = $('recording-video-player');
+  const title = $('preview-title');
+  if (!container || !video) return;
+
+  if (title) title.textContent = `Viewing: ${filename}`;
+  video.src = `/api/recordings/${encodeURIComponent(filename)}`;
+  container.classList.remove('hidden');
+  container.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 async function init(){
@@ -870,10 +1151,22 @@ async function init(){
       } else if (e.key === 'f' || e.key === 'F') {
         e.preventDefault();
         ptzController.toggleFullscreen();
+      } else if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        toggleRecording();
       }
     }
   });
   
+  // Recording controls
+  $('record-camera-btn')?.addEventListener('click', () => toggleRecording());
+  $('record-camera-tool-btn')?.addEventListener('click', () => toggleRecording());
+  $('refresh-recordings-btn')?.addEventListener('click', () => refreshRecordings());
+  $('close-preview-btn')?.addEventListener('click', () => {
+    $('recording-player-container')?.classList.add('hidden');
+    $('recording-video-player')?.pause();
+  });
+
   // Alert config buttons
   $('edit-camera').onclick = editCameraModal;
   $('test-camera').onclick = async()=>{const cam=getCam();if(!cam)return;try{const r=await req(`/api/cameras/${cam.id}/test`,{method:'POST'});toast(r.message);setTimeout(refreshCameras,1500);}catch(e){toast(e.message,true);}};
@@ -911,7 +1204,7 @@ async function init(){
   catch(err){ toast(err.message,true); }
 }
 async function loadDashboard(){
-  const results = await Promise.allSettled([refreshCameras(), refreshStats(), refreshEvents()]);
+  const results = await Promise.allSettled([refreshCameras(), refreshStats(), refreshEvents(), refreshRecordings()]);
   for (const result of results) if (result.status === 'rejected') console.error('Dashboard section failed:', result.reason);
   setViewMode('grid');
   connectWS();
@@ -919,6 +1212,7 @@ async function loadDashboard(){
     window.__vgPolling=true;
     setInterval(()=> {if(state.loggedIn) Promise.all([refreshCameras(),refreshStats()]).catch(console.warn);},4000);
     setInterval(()=> {if(state.loggedIn) refreshEvents().catch(console.warn);},15000);
+    setInterval(()=> {if(state.loggedIn) refreshRecordings().catch(console.warn);},10000);
   }
 }
 init();

@@ -25,6 +25,7 @@ from .database import Database
 from .engine import CameraManager, CameraWorker, EventBus
 from .schemas import CameraCreate, CameraUpdate
 from .alerts import AlertManager
+from .recorder import VideoRecorder
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
 LOGGER = logging.getLogger('visionguard')
@@ -93,7 +94,8 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
     db = Database(db_path or (settings.data_dir / 'visionguard.db'))
     bus = EventBus()
     alert_manager = AlertManager(db)
-    manager = CameraManager(db, bus, alert_manager)
+    recorder = VideoRecorder(db=db)
+    manager = CameraManager(db, bus, alert_manager, recorder=recorder)
     
     secret = settings.session_secret.encode('utf-8')
     admin_password = settings.admin_password or settings.dashboard_password
@@ -140,7 +142,7 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
 
     app = FastAPI(title='VisionGuard Surveillance Analytics', version='2.1.0', lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
-    app.state.db, app.state.manager, app.state.bus, app.state.alert_manager = db, manager, bus, alert_manager
+    app.state.db, app.state.manager, app.state.bus, app.state.alert_manager, app.state.recorder = db, manager, bus, alert_manager, recorder
     app.mount('/static', StaticFiles(directory=settings.static_dir), name='static')
 
     def get_user(request):
@@ -163,7 +165,7 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
     @app.middleware('http')
     async def authorization(request: Request, call_next):
         path = request.url.path
-        if path.startswith('/api/') and path not in ('/api/session', '/api/login'):
+        if path.startswith('/api/') and path not in ('/api/session', '/api/login', '/api/alerts/buzzer.mp3'):
             user = session_user(request.cookies.get('vg_session'))
             if (admin_password or db.list_clients()) and not user:
                 return JSONResponse({'detail': 'Authentication required'}, status_code=401)
@@ -251,7 +253,10 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
     async def discover_cameras(request: Request):
         require_admin(request)
         def scan():
-            import camera_utils
+            try:
+                from . import camera_utils
+            except ImportError:
+                import camera_utils
             return camera_utils.detect_cameras(max_index=8)
         return await asyncio.to_thread(scan)
 
@@ -676,9 +681,74 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
         cams = db.list_cameras()
         if user['role']=='client': cams=[c for c in cams if c.get('client_id')==user.get('client_id')]
         out = db.stats(client_id=user.get('client_id'))
-        out.update(cameras=len(cams), online=sum(manager.telemetry(c['id'])['status']=='online' for c in cams),
-                   current_people=sum(manager.telemetry(c['id'])['current_people'] for c in cams))
+        telemetries = [manager.telemetry(c['id']) for c in cams]
+        out.update(
+            cameras=len(cams),
+            online=sum(t.get('status') == 'online' for t in telemetries),
+            current_people=sum(t.get('current_people', 0) for t in telemetries),
+            unique_people_5m=sum(t.get('unique_people_5m', 0) for t in telemetries),
+            active_recordings=sum(bool(t.get('is_recording', False)) for t in telemetries)
+        )
         return out
+
+    @app.post('/api/cameras/{camera_id}/recording/start')
+    async def start_camera_recording(camera_id: str, request: Request):
+        user = require_user(request)
+        cam = db.get_camera(camera_id)
+        if not cam or (user['role'] == 'client' and cam.get('client_id') != user.get('client_id')):
+            raise HTTPException(404, 'Camera not found')
+        res = manager.start_recording(camera_id)
+        bus.publish({'type': 'recording_started', 'camera_id': camera_id, 'recording': res})
+        return res
+
+    @app.post('/api/cameras/{camera_id}/recording/stop')
+    async def stop_camera_recording(camera_id: str, request: Request):
+        user = require_user(request)
+        cam = db.get_camera(camera_id)
+        if not cam or (user['role'] == 'client' and cam.get('client_id') != user.get('client_id')):
+            raise HTTPException(404, 'Camera not found')
+        res = manager.stop_recording(camera_id)
+        if res is None:
+            raise HTTPException(400, 'Camera is not currently recording')
+        bus.publish({'type': 'recording_stopped', 'camera_id': camera_id, 'recording': res})
+        return res
+
+    @app.get('/api/cameras/{camera_id}/recording/status')
+    async def get_camera_recording_status(camera_id: str, request: Request):
+        user = require_user(request)
+        cam = db.get_camera(camera_id)
+        if not cam or (user['role'] == 'client' and cam.get('client_id') != user.get('client_id')):
+            raise HTTPException(404, 'Camera not found')
+        return manager.recording_status(camera_id)
+
+    @app.get('/api/recordings')
+    async def list_recordings(request: Request, camera_id: str | None = None, limit: int = 100):
+        user = require_user(request)
+        if not 1 <= limit <= 500:
+            raise HTTPException(422, 'Limit must be 1..500')
+        recs = db.list_recordings(camera_id=camera_id, limit=limit)
+        return recs
+
+    @app.get('/api/recordings/{filename}')
+    async def get_recording_video(filename: str, request: Request):
+        user = require_user(request)
+        if not re.fullmatch(r'rec_[A-Za-z0-9_\-]+_[0-9]{8}_[0-9]{6}_[0-9a-f]{6}\.mp4', filename):
+            raise HTTPException(400, 'Invalid recording filename')
+        recordings_dir = settings.data_dir / 'recordings'
+        file_path = recordings_dir / filename
+        if not file_path.is_file():
+            raise HTTPException(404, 'Recording file not found')
+        return FileResponse(file_path, media_type='video/mp4', filename=filename)
+
+    @app.delete('/api/recordings/{filename}')
+    async def delete_recording(filename: str, request: Request):
+        user = require_user(request)
+        if user.get('role') != 'admin':
+            raise HTTPException(403, 'Only administrators can delete recordings')
+        success = db.delete_recording(filename)
+        if not success:
+            raise HTTPException(404, 'Recording not found')
+        return {'ok': True, 'deleted': filename}
 
     @app.get('/api/events')
     async def events(request: Request, camera_id: str | None = None, kind: str | None = None, limit: int = 80):
@@ -727,9 +797,11 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
         if camera and user['role']=='client' and camera.get('client_id') != user.get('client_id'): raise HTTPException(404, 'Camera not found')
         if camera is None or not camera['enabled']:
             raise HTTPException(404, 'Camera not available')
-        def frames():
+        async def frames():
             last_frame = None
             while True:
+                if await request.is_disconnected():
+                    break
                 image = manager.frame(camera_id)
                 if image is None and last_frame is not None:
                     last_frame = None
@@ -750,9 +822,7 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
                     if ok:
                         placeholder = encoded.tobytes()
                         yield b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(placeholder)).encode() + b'\r\n\r\n' + placeholder + b'\r\n'
-                time_sleep = .12
-                import time
-                time.sleep(time_sleep)
+                await asyncio.sleep(0.08)
         return StreamingResponse(frames(), media_type='multipart/x-mixed-replace; boundary=frame',
                                  headers={'Cache-Control':'no-cache, no-store', 'X-Content-Type-Options':'nosniff'})
 
@@ -796,6 +866,15 @@ def create_app(db_path: Path | None = None, start_cameras: bool = True, auto_cam
         """Test all alert channels."""
         results = alert_manager.test_alerts()
         return {'results': results}
+
+    @app.get('/api/alerts/buzzer.mp3')
+    async def get_buzzer_audio():
+        """Serve the buzzer mp3 audio file for web dashboard alarms."""
+        ROOT = Path(__file__).resolve().parent.parent
+        buzzer_path = ROOT / 'connieconnie2-buzzer-227217.mp3'
+        if not buzzer_path.is_file():
+            raise HTTPException(404, 'Buzzer audio file not found')
+        return FileResponse(buzzer_path, media_type='audio/mpeg')
 
     @app.get('/api/detection-types')
     async def detection_types():

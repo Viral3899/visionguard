@@ -16,6 +16,97 @@ from .config import settings
 from .database import Database
 
 LOGGER = logging.getLogger(__name__)
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def get_urgent_speech_text(kind: str, camera_name: str = "", message: str = "") -> str:
+    """Generate repeated urgency speech text matching user specification."""
+    kind_lower = str(kind).strip().lower()
+    cam_str = f"at {camera_name}" if camera_name else ""
+
+    if 'fire' in kind_lower:
+        return f"Fire! Fire! Fire! Fire detected {cam_str}."
+    elif 'smoke' in kind_lower:
+        return f"Fire! Smoke! Fire! Smoke detected {cam_str}."
+    elif any(k in kind_lower for k in ('violence', 'fight', 'assault')):
+        return f"Violence! Violence! Violence! Violence detected {cam_str}."
+    elif any(k in kind_lower for k in ('weapon', 'knife', 'gun')):
+        return f"Weapon! Weapon! Weapon! Weapon detected {cam_str}."
+    elif 'intrusion' in kind_lower:
+        return f"Intrusion! Intrusion! Intrusion! Zone intrusion {cam_str}."
+    elif 'fall' in kind_lower:
+        return f"Emergency! Fall! Fall! Fall detected {cam_str}."
+    elif 'heat' in kind_lower:
+        return f"Warning! Heat source! Fire hazard {cam_str}."
+    else:
+        word = kind_lower.replace('_', ' ').title()
+        return f"Alert! Alert! Alert! {word} {cam_str}."
+
+
+class SirenPlayer:
+    """Plays the physical buzzer MP3 sound for 10 seconds on Windows using MCI."""
+
+    def __init__(self, audio_path: Path | str | None = None):
+        self.audio_path = Path(audio_path or (ROOT / 'connieconnie2-buzzer-227217.mp3')).resolve()
+        self._lock = threading.Lock()
+        self._current_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._current_alias: str | None = None
+
+    def play_buzzer(self, duration_seconds: float = 10.0):
+        """Play the buzzer sound in a background thread for duration_seconds."""
+        if not self.audio_path.is_file():
+            LOGGER.warning(f"Buzzer sound file not found at {self.audio_path}")
+            return
+        with self._lock:
+            # Signal any existing playback to stop
+            self._stop_event.set()
+            if self._current_thread and self._current_thread.is_alive():
+                self._current_thread.join(timeout=0.5)
+            self._stop_event.clear()
+            self._current_thread = threading.Thread(
+                target=self._play_worker,
+                args=(duration_seconds,),
+                daemon=True,
+                name="siren-buzzer-thread"
+            )
+            self._current_thread.start()
+
+    def _play_worker(self, duration_seconds: float):
+        import ctypes
+        alias = f"buzzer_{uuid4().hex[:8]}"
+        self._current_alias = alias
+        mci = getattr(getattr(ctypes, 'windll', None), 'winmm', None)
+        if not mci:
+            LOGGER.warning("winmm.dll not available for MCI playback")
+            return
+        send_str = mci.mciSendStringW
+        try:
+            send_str(f'close {alias}', None, 0, 0)
+            open_cmd = f'open "{self.audio_path}" type mpegvideo alias {alias}'
+            err = send_str(open_cmd, None, 0, 0)
+            if err != 0:
+                LOGGER.warning(f"MCI open failed with code {err}")
+                return
+            send_str(f'play {alias} repeat', None, 0, 0)
+            LOGGER.info(f"Buzzer siren started for {duration_seconds}s")
+            start = time.monotonic()
+            while time.monotonic() - start < duration_seconds and not self._stop_event.is_set():
+                time.sleep(0.1)
+        except Exception as e:
+            LOGGER.error(f"Error playing buzzer siren: {e}")
+        finally:
+            try:
+                send_str(f'stop {alias}', None, 0, 0)
+                send_str(f'close {alias}', None, 0, 0)
+                LOGGER.info("Buzzer siren stopped and closed cleanly")
+            except Exception:
+                pass
+            if self._current_alias == alias:
+                self._current_alias = None
+
+    def stop(self):
+        self._stop_event.set()
 
 
 SUSPICIOUS_TELEGRAM_KINDS = {
@@ -206,31 +297,8 @@ class TTSAlerter:
         if not self.enabled or event.kind not in settings.tts_alert_types:
             return
         
-        severity_phrases = {
-            'critical': 'Critical alert',
-            'high': 'High priority alert',
-            'medium': 'Alert',
-            'low': 'Notice'
-        }
-        
-        severity_phrase = severity_phrases.get(event.severity, 'Alert')
-        kind_messages = {
-            'fire': 'Fire detected',
-            'smoke': 'Smoke detected',
-            'violence': 'Violence detected',
-            'weapon': 'Weapon detected',
-            'fight': 'Fight detected',
-            'fall_detected': 'Fall detected',
-            'loitering': 'Loitering detected',
-            'intrusion': 'Intrusion detected',
-            'proximity_alert': 'Suspicious proximity detected',
-            'heat_source': 'Heat source detected'
-        }
-        
-        kind_msg = kind_messages.get(event.kind, event.kind.replace('_', ' '))
-        message = f"{severity_phrase}. {kind_msg}. {event.camera_name}. {event.message}"
-        
-        self.speak(message, settings.siren_repeat_count)
+        message = get_urgent_speech_text(event.kind, event.camera_name, event.message)
+        self.speak(message, max(1, settings.siren_repeat_count))
     
     def stop(self):
         """Stop current speech."""
@@ -242,9 +310,9 @@ class TTSAlerter:
                 pass
     
     def test_speak(self):
-        """Test TTS with a sample message."""
+        """Test TTS with a sample urgent alert message."""
         if self.enabled:
-            self.speak("VisionGuard voice alert system is ready.", 1)
+            self.speak("Fire! Fire! Fire! Violence! Violence! Weapon! Weapon! VisionGuard voice alert system is ready.", 1)
 
 
 class AlertManager:
@@ -254,6 +322,7 @@ class AlertManager:
         self.db = db
         self.telegram = TelegramAlerter(db)
         self.tts = TTSAlerter()
+        self.siren = SirenPlayer()
         self._last_alert_time: dict[str, float] = {}
     
     def process_event(self, event: AlertEvent, camera_config: dict):
@@ -278,11 +347,21 @@ class AlertManager:
             if self._check_cooldown(f'telegram:{event.camera_id}:{kind}', settings.telegram_cooldown_seconds):
                 self.telegram.send_alert(event)
 
-        # Local TTS can still announce configured events independently of Telegram confidence.
-        if camera_config.get('tts_enabled', 1) and self.tts.enabled:
-            if self._check_cooldown(f'tts:{event.camera_id}:{kind}', settings.siren_duration_seconds * settings.siren_repeat_count):
+        # Siren buzzer sound (10s) and local TTS urgent announcement
+        siren_eligible_kinds = {
+            'fire', 'fire_detected', 'smoke', 'heat_source',
+            'violence', 'weapon', 'fight', 'knife', 'gun', 'assault',
+            'intrusion', 'fall_detected', 'unusual_activity'
+        }
+        is_siren = (kind in siren_eligible_kinds or
+                    any(k in kind for k in ('fire', 'smoke', 'viol', 'weap', 'fight', 'knife', 'gun', 'intr')))
+
+        if camera_config.get('tts_enabled', 1):
+            if is_siren and self._check_cooldown(f'siren:{event.camera_id}:{kind}', 10):
+                self.siren.play_buzzer(10.0)
+
+            if self.tts.enabled and self._check_cooldown(f'tts:{event.camera_id}:{kind}', 10):
                 self.tts.trigger_alert(event)
-                # Log TTS alert attempt
                 self.db.log_alert(event_id, 'tts', 'triggered', f'TTS alert: {event.kind}')
     
     def _check_cooldown(self, kind: str, cooldown: int) -> bool:
@@ -297,15 +376,9 @@ class AlertManager:
     def test_alerts(self) -> dict[str, bool]:
         """Test all alert channels."""
         results = {}
-        test_event = AlertEvent(
-            event_id=uuid4().hex,
-            camera_id='test',
-            camera_name='Test Camera',
-            kind='test',
-            severity='low',
-            message='This is a test alert from VisionGuard',
-            timestamp=time.strftime('%Y-%m-%d %H:%M:%S')
-        )
+        # Trigger 10-second buzzer sound
+        self.siren.play_buzzer(10.0)
+        results['buzzer'] = True
         
         if self.tts.enabled:
             self.tts.test_speak()

@@ -80,6 +80,21 @@ class Database:
                     sensitivity REAL NOT NULL DEFAULT 1.0,
                     FOREIGN KEY(camera_id) REFERENCES cameras(id)
                 );
+                CREATE TABLE IF NOT EXISTS recordings (
+                    id TEXT PRIMARY KEY,
+                    camera_id TEXT NOT NULL,
+                    camera_name TEXT NOT NULL,
+                    filename TEXT NOT NULL UNIQUE,
+                    file_path TEXT NOT NULL,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT,
+                    duration_seconds REAL DEFAULT 0.0,
+                    file_size_bytes INTEGER DEFAULT 0,
+                    frames_written INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_recordings_camera ON recordings(camera_id);
+                CREATE INDEX IF NOT EXISTS idx_recordings_created ON recordings(created_at DESC);
             ''')
             # One-time migration: enable Telegram per-camera for existing installs.
             # The admin can turn it off per camera afterwards; never overwrite that choice on startup.
@@ -330,3 +345,57 @@ class Database:
         if test_dir.exists():
             for f in test_dir.glob('*'):
                 f.unlink(missing_ok=True)
+
+    def store_recording(self, rec: dict) -> dict:
+        now = datetime.now(timezone.utc).isoformat()
+        rec_id = rec.get('id') or uuid4().hex
+        filename = rec['filename']
+        with self.lock, self.connection() as cx:
+            cx.execute('''
+                INSERT INTO recordings (
+                    id, camera_id, camera_name, filename, file_path,
+                    start_time, end_time, duration_seconds, file_size_bytes,
+                    frames_written, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                rec_id, rec['camera_id'], rec['camera_name'], filename,
+                str(rec['file_path']), rec.get('start_time', now),
+                rec.get('end_time', now), float(rec.get('duration_seconds', 0.0)),
+                int(rec.get('file_size_bytes', 0)), int(rec.get('frames_written', 0)),
+                rec.get('created_at', now)
+            ))
+            row = cx.execute('SELECT * FROM recordings WHERE id=?', (rec_id,)).fetchone()
+            return dict(row)
+
+    def list_recordings(self, camera_id: str | None = None, limit: int = 100) -> list[dict]:
+        query = 'SELECT * FROM recordings'
+        params: list[object] = []
+        if camera_id:
+            query += ' WHERE camera_id=?'
+            params.append(camera_id)
+        query += ' ORDER BY created_at DESC LIMIT ?'
+        params.append(limit)
+        with self.connection() as cx:
+            return [dict(r) for r in cx.execute(query, tuple(params)).fetchall()]
+
+    def get_recording(self, filename_or_id: str) -> dict | None:
+        with self.connection() as cx:
+            row = cx.execute(
+                'SELECT * FROM recordings WHERE id=? OR filename=?',
+                (filename_or_id, filename_or_id)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def delete_recording(self, filename_or_id: str) -> bool:
+        with self.lock, self.connection() as cx:
+            row = cx.execute(
+                'SELECT * FROM recordings WHERE id=? OR filename=?',
+                (filename_or_id, filename_or_id)
+            ).fetchone()
+            if not row:
+                return False
+            rec = dict(row)
+            cx.execute('DELETE FROM recordings WHERE id=?', (rec['id'],))
+        file_path = Path(rec['file_path'])
+        file_path.unlink(missing_ok=True)
+        return True

@@ -17,6 +17,142 @@ from .threat_policy import ThreatPolicy
 
 LOGGER = logging.getLogger(__name__)
 
+
+def draw_security_bounding_boxes(
+    frame: np.ndarray,
+    events: list[dict],
+    persons: list[dict] | None = None
+) -> np.ndarray:
+    """Render high-visibility bounding boxes and labels for weapons and irregular activities.
+
+    Highlights weapons (guns, knives) in neon magenta/red, and irregular activities
+    (violence, fights, falls, loitering, unusual activity, intrusions) in orange/amber/yellow.
+    """
+    import math
+    if frame is None or not events:
+        return frame
+    h, w = frame.shape[:2]
+    if h <= 0 or w <= 0:
+        return frame
+
+    person_by_id = {}
+    if persons:
+        for p in persons:
+            if isinstance(p, dict) and 'id' in p and 'bbox' in p:
+                person_by_id[int(p['id'])] = p['bbox']
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get('type', event.get('kind', ''))).lower()
+        subtype = str(event.get('subtype', '')).lower()
+        confidence = event.get('confidence')
+
+        is_weapon = (
+            event_type == 'weapon' or
+            subtype in ('knife', 'blade', 'gun', 'pistol', 'rifle', 'weapon')
+        )
+        is_violence = event_type in ('violence', 'fight', 'assault') or 'fight' in subtype or 'violence' in subtype
+        is_fall = event_type in ('fall_detected', 'fall') or 'fall' in subtype
+        is_loitering = event_type == 'loitering' or 'loitering' in subtype
+        is_unusual = event_type in ('unusual_activity', 'abnormal_activity') or 'unusual' in subtype
+        is_intrusion = event_type in ('intrusion', 'restricted') or 'intrusion' in subtype
+        is_fire = event_type in ('fire_detected', 'fire') or subtype in ('fire', 'flame')
+        is_smoke = event_type in ('smoke',)
+
+        if not (is_weapon or is_violence or is_fall or is_loitering or is_unusual or is_intrusion or is_fire or is_smoke):
+            continue
+
+        bbox = event.get('bbox')
+        if not bbox and event.get('track_id') is not None:
+            track_id = int(event['track_id'])
+            bbox = person_by_id.get(track_id)
+
+        if not bbox or len(bbox) != 4:
+            continue
+
+        try:
+            x1, y1, x2, y2 = [float(v) for v in bbox]
+            if max(x1, y1, x2, y2) <= 1.05 and (x2 <= 1.0 or y2 <= 1.0):
+                px1 = int(round(x1 * w))
+                py1 = int(round(y1 * h))
+                px2 = int(round(x2 * w))
+                py2 = int(round(y2 * h))
+            else:
+                px1 = int(round(x1))
+                py1 = int(round(y1))
+                px2 = int(round(x2))
+                py2 = int(round(y2))
+
+            px1, px2 = sorted((max(0, min(w - 1, px1)), max(0, min(w - 1, px2))))
+            py1, py2 = sorted((max(0, min(h - 1, py1)), max(0, min(h - 1, py2))))
+            if px2 <= px1 or py2 <= py1:
+                continue
+
+            conf_str = f" {float(confidence):.0%}" if confidence is not None and math.isfinite(float(confidence)) else ""
+
+            if is_weapon:
+                color = (255, 0, 255) if 'knife' in subtype or 'blade' in subtype else (0, 0, 255)
+                sub_label = subtype if subtype else 'weapon'
+                label = f"[!] WEAPON: {sub_label.upper()}{conf_str}"
+            elif is_violence:
+                color = (0, 69, 255)
+                sub_label = subtype if subtype else 'violence'
+                label = f"[!] VIOLENCE: {sub_label.upper()}{conf_str}"
+            elif is_fall:
+                color = (0, 215, 255)
+                label = f"[!] IRREGULAR: FALL DETECTED{conf_str}"
+            elif is_loitering:
+                color = (211, 0, 148)
+                label = f"[!] IRREGULAR: LOITERING{conf_str}"
+            elif is_unusual:
+                color = (60, 20, 220)
+                label = f"[!] IRREGULAR: UNUSUAL ACTIVITY{conf_str}"
+            elif is_intrusion:
+                color = (30, 30, 220)
+                label = f"[!] RESTRICTED ZONE INTRUSION"
+            elif is_fire:
+                color = (0, 0, 255)
+                label = f"[!] FIRE DETECTED{conf_str}"
+            elif is_smoke:
+                color = (0, 140, 255)
+                label = f"[!] SMOKE WARNING{conf_str}"
+            else:
+                color = (0, 200, 255)
+                label = f"[!] ALERT: {event_type.upper()}{conf_str}"
+
+            cv2.rectangle(frame, (px1, py1), (px2, py2), color, 3, cv2.LINE_AA)
+
+            line_len = max(8, min(24, (px2 - px1) // 4, (py2 - py1) // 4))
+            cv2.line(frame, (px1, py1), (px1 + line_len, py1), (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.line(frame, (px1, py1), (px1, py1 + line_len), (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.line(frame, (px2, py1), (px2 - line_len, py1), (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.line(frame, (px2, py1), (px2, py1 + line_len), (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.line(frame, (px1, py2), (px1 + line_len, py2), (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.line(frame, (px1, py2), (px1, py2 - line_len), (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.line(frame, (px2, py2), (px2 - line_len, py2), (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.line(frame, (px2, py2), (px2, py2 - line_len), (255, 255, 255), 2, cv2.LINE_AA)
+
+            font_scale = 0.50
+            font_thick = 1
+            (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thick)
+            pad = 4
+            tag_y1 = max(0, py1 - th - 2 * pad)
+            tag_y2 = tag_y1 + th + 2 * pad
+            tag_x1 = px1
+            tag_x2 = min(w - 1, px1 + tw + 2 * pad)
+
+            cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), (10, 16, 26), -1)
+            cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), color, 1)
+            cv2.putText(
+                frame, label, (tag_x1 + pad, tag_y2 - pad - 1),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thick, cv2.LINE_AA
+            )
+        except Exception as exc:
+            LOGGER.debug("Error drawing security box: %s", exc)
+
+    return frame
+
 # Shared specialist *weights* across cameras, but preserve each camera's own
 # per-frame temporal state and keep YOLO calls serialized through a model lock.
 # The person tracker is NOT pooled: persist=True needs per-camera track state.

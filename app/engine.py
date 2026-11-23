@@ -14,8 +14,9 @@ from .alerts import AlertEvent, AlertManager
 from .analytics import Analytics
 from .config import local_model_path, settings
 from .database import Database
-from .detectors import DetectionManager
+from .detectors import DetectionManager, draw_security_bounding_boxes
 from .incidents import IncidentTracker, eligible_event, draw_event_box
+from .person_tracker import PersonDeduplicator
 
 def event_meets_confidence_floor(event: dict, threshold: float = 0.50) -> bool:
     """Keep analytics events without model confidence; reject model scores below threshold.
@@ -61,11 +62,12 @@ class EventBus:
 
 
 class CameraWorker:
-    def __init__(self, camera: dict, db: Database, bus: EventBus, alert_manager: AlertManager):
+    def __init__(self, camera: dict, db: Database, bus: EventBus, alert_manager: AlertManager, recorder: Any | None = None):
         self.camera = camera
         self.db = db
         self.bus = bus
         self.alert_manager = alert_manager
+        self.recorder = recorder
         self.stop_signal = threading.Event()
         self.thread: threading.Thread | None = None
         self.jpeg: bytes | None = None
@@ -73,6 +75,8 @@ class CameraWorker:
         self.status = 'starting'
         self.error = ''
         self.current_people = 0
+        self.unique_people_5m = 0
+        self.person_deduplicator = PersonDeduplicator(cooldown_seconds=300.0)
         self.fps = 0.0
         self.last_frame = 0.0
         self.camera_config = db.get_camera_config(camera['id']) or {}
@@ -99,8 +103,11 @@ class CameraWorker:
             self.thread.join(timeout=10)
 
     def telemetry(self):
+        is_rec = bool(self.recorder and self.recorder.is_recording(self.camera['id']))
         return {'status': self.status, 'error': self.error, 'has_frame': self.latest() is not None,
-                'current_people': self.current_people, 'fps': round(self.fps, 1),
+                'current_people': self.current_people, 'unique_people_5m': self.unique_people_5m,
+                'is_recording': is_rec,
+                'fps': round(self.fps, 1),
                 'last_frame_age_seconds': round(time.monotonic() - self.last_frame, 1) if self.last_frame else None}
 
     def latest(self):
@@ -207,7 +214,11 @@ class CameraWorker:
                     
                     # Run analytics (intrusion, tripwire)
                     events = analytics.process(persons)
-                    self.current_people = analytics.current_people
+
+                    # Update 5-minute person deduplication counter
+                    in_frame, unique_5m = self.person_deduplicator.update(frame, persons, now=time.monotonic())
+                    self.current_people = in_frame
+                    self.unique_people_5m = unique_5m
                     
                     # Run advanced detections
                     detection_events = self.detection_manager.process_frame(
@@ -226,13 +237,23 @@ class CameraWorker:
                     all_events = events + [item for item in raw_detections
                                            if eligible_event(item, settings.incident_min_confidence)]
                     
+                    # Render bounding boxes for weapons and irregular activities directly on live frame
+                    frame = draw_security_bounding_boxes(frame, all_events, persons=persons)
+
                     self._draw_geometry(frame, w, h)
-                    cv2.rectangle(frame, (12,12), (204,48), (10,20,34), -1)
-                    cv2.putText(frame, f'PEOPLE: {self.current_people}', (24,38),
-                                cv2.FONT_HERSHEY_SIMPLEX, .67, (255,255,255), 2)
+                    hud_text = f'IN FRAME: {self.current_people} | 5M PASSERS: {self.unique_people_5m}'
+                    (bw, bh), _ = cv2.getTextSize(hud_text, cv2.FONT_HERSHEY_SIMPLEX, 0.58, 2)
+                    cv2.rectangle(frame, (12, 12), (18 + bw + 10, 16 + bh + 12), (10, 20, 34), -1)
+                    cv2.rectangle(frame, (12, 12), (18 + bw + 10, 16 + bh + 12), (40, 198, 245), 1)
+                    cv2.putText(frame, hud_text, (20, 16 + bh + 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.58, (255, 255, 255), 2)
                     
                     # Show active detections on frame
                     self._draw_detection_status(frame, all_events)
+
+                    # Pass fully annotated frame to VideoRecorder if recording is active
+                    if self.recorder and self.recorder.is_recording(self.camera['id']):
+                        self.recorder.write_frame(self.camera['id'], frame)
                     
                     success, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, settings.jpeg_quality])
                     if success:
@@ -376,10 +397,11 @@ class CameraWorker:
 
 
 class CameraManager:
-    def __init__(self, db, bus, alert_manager):
+    def __init__(self, db, bus, alert_manager, recorder: Any | None = None):
         self.db = db
         self.bus = bus
         self.alert_manager = alert_manager
+        self.recorder = recorder
         self.lock = threading.RLock()
         self.workers: dict[str, CameraWorker] = {}
         self.capacity_limited: set[str] = set()
@@ -403,7 +425,7 @@ class CameraManager:
             if previous: previous.stop()
             camera = self.db.get_camera(camera_id, safe=False)
             if camera and camera['enabled']:
-                worker = CameraWorker(camera, self.db, self.bus, self.alert_manager)
+                worker = CameraWorker(camera, self.db, self.bus, self.alert_manager, recorder=self.recorder)
                 self.workers[camera_id] = worker
                 worker.start()
 
@@ -411,13 +433,41 @@ class CameraManager:
         with self.lock:
             for worker in list(self.workers.values()): worker.stop()
             self.workers.clear()
+        if self.recorder:
+            try:
+                self.recorder.stop_all()
+            except Exception:
+                pass
+
+    def start_recording(self, cam_id: str) -> dict:
+        if not self.recorder:
+            return {'error': 'Recorder not initialized', 'is_recording': False}
+        with self.lock:
+            worker = self.workers.get(cam_id)
+        cam_name = worker.camera.get('name', f'Camera {cam_id}') if worker else f'Camera {cam_id}'
+        w, h = 640, 480
+        fps = 20.0
+        if worker and worker.fps > 1.0:
+            fps = float(worker.fps)
+        return self.recorder.start_recording(cam_id, cam_name, width=w, height=h, fps=fps)
+
+    def stop_recording(self, cam_id: str) -> dict | None:
+        if not self.recorder:
+            return None
+        return self.recorder.stop_recording(cam_id)
+
+    def recording_status(self, cam_id: str) -> dict:
+        if not self.recorder:
+            return {'is_recording': False, 'camera_id': cam_id}
+        return self.recorder.get_status(cam_id)
 
     def telemetry(self, cam_id):
         with self.lock:
             worker = self.workers.get(cam_id)
+        is_rec = bool(self.recorder and self.recorder.is_recording(cam_id))
         if cam_id in self.capacity_limited:
-            return {'status': 'capacity_limit', 'error': 'Max active cameras reached', 'current_people': 0, 'fps': 0, 'last_frame_age_seconds': None}
-        return worker.telemetry() if worker else {'status': 'disabled', 'error': '', 'current_people': 0, 'fps': 0, 'last_frame_age_seconds': None}
+            return {'status': 'capacity_limit', 'error': 'Max active cameras reached', 'current_people': 0, 'unique_people_5m': 0, 'is_recording': is_rec, 'fps': 0, 'last_frame_age_seconds': None}
+        return worker.telemetry() if worker else {'status': 'disabled', 'error': '', 'current_people': 0, 'unique_people_5m': 0, 'is_recording': is_rec, 'fps': 0, 'last_frame_age_seconds': None}
 
     def frame(self, cam_id):
         with self.lock:
