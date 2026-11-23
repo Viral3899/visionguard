@@ -1114,6 +1114,76 @@ class ObjectDetector(BaseDetector):
         return DetectionResult([all_boxes[i] for i in keep], [all_classes[i] for i in keep],
                                [all_confs[i] for i in keep], full.class_names)
 
+    def draw_daily_objects(
+        self,
+        frame: np.ndarray,
+        result: DetectionResult,
+        color: tuple[int, int, int] = (235, 180, 30),
+        thickness: int = 2,
+        font_scale: float = 0.44
+    ) -> np.ndarray:
+        """Render high-clarity bounding boxes and labels for daily life objects.
+
+        Excludes person (class 0, managed by person tracker) and weapon/fire classes
+        which are managed by specialist detectors.
+        """
+        if frame is None or result is None or not result.boxes:
+            return frame
+        h, w = frame.shape[:2]
+        if h <= 0 or w <= 0:
+            return frame
+
+        excluded_names = {'person', 'fire', 'smoke', 'knife', 'gun', 'weapon', 'pistol', 'rifle', 'blade'}
+
+        for box, cls, conf in zip(result.boxes, result.classes, result.confidences):
+            class_name = str(result.class_names.get(cls, cls)).strip().lower()
+            if cls == 0 or class_name in excluded_names:
+                continue
+
+            x1, y1, x2, y2 = [int(round(v)) for v in box]
+            x1, x2 = max(0, min(w - 1, x1)), max(0, min(w - 1, x2))
+            y1, y2 = max(0, min(h - 1, y1)), max(0, min(h - 1, y2))
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            # Draw sleek bounding box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, max(1, thickness), cv2.LINE_AA)
+
+            # Draw corner accents
+            clen = max(6, min(16, (x2 - x1) // 5, (y2 - y1) // 5))
+            cv2.line(frame, (x1, y1), (x1 + clen, y1), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (x1, y1), (x1, y1 + clen), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (x2, y1), (x2 - clen, y1), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (x2, y1), (x2, y1 + clen), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (x1, y2), (x1 + clen, y2), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (x1, y2), (x1, y2 - clen), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (x2, y2), (x2 - clen, y2), (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.line(frame, (x2, y2), (x2, y2 - clen), (255, 255, 255), 1, cv2.LINE_AA)
+
+            # Compact label badge
+            label = f"{class_name.upper()} {conf:.0%}"
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+            pad = 3
+            tag_y1 = max(0, y1 - th - 2 * pad)
+            tag_y2 = tag_y1 + th + 2 * pad
+            tag_x1 = x1
+            tag_x2 = min(w - 1, x1 + tw + 2 * pad)
+
+            cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), (14, 20, 30), -1)
+            cv2.rectangle(frame, (tag_x1, tag_y1), (tag_x2, tag_y2), color, 1)
+            cv2.putText(
+                frame,
+                label,
+                (tag_x1 + pad, tag_y2 - pad - 1),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
+        return frame
+
 
 class DetectionManager:
     """Manages all detectors and coordinates detection pipeline."""
@@ -1173,6 +1243,7 @@ class DetectionManager:
         )
         self.last_suppressed: list[dict] = []
         self.last_raw_candidates: list[dict] = []
+        self.last_object_result: DetectionResult | None = None
         self._last_telegram_alert: dict[str, float] = {}
         self._last_tts_alert: dict[str, float] = {}
         # Frame counters for running detectors at different frequencies
@@ -1298,6 +1369,7 @@ class DetectionManager:
         if camera_config.get('object_enabled', 1) and self._frame_counter % self.object_every_n_frames == 0:
             object_result = self.object_detector.detect(inference_frame)
             if object_result:
+                self.last_object_result = object_result
                 # Filter for knife class (COCO class 43) if knife_tile_scan enabled
                 if settings.knife_tile_scan:
                     knife_result = self._filter_result(object_result, {'knife'})

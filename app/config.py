@@ -121,13 +121,13 @@ class Settings:
     # YOLO-World open vocabulary classes - includes weapons, fire, violence, falls
     yolo_world_classes: tuple[str, ...] = tuple(x.strip() for x in os.getenv('YOLO_WORLD_CLASSES', 'fire,smoke,person fighting,knife,a person holding a knife,gun,a person holding a gun,weapon,pistol,rifle,blade,person falling').split(',') if x.strip())
 
-    # General Object Detection (COCO classes)
+    # General Object Detection (COCO classes - all daily life objects by default)
     object_model_path: str = os.getenv('OBJECT_MODEL_PATH', 'yolov8n.pt')
     object_confidence: float = max(0.40, get_float('OBJECT_CONFIDENCE', 0.40, 0.0))
-    object_imgsz: int = get_int('OBJECT_IMGSZ', 960, 128)
+    object_imgsz: int = get_int('OBJECT_IMGSZ', 640, 128)
     object_every_n_frames: int = get_int('OBJECT_EVERY_N_FRAMES', 1, 1)
     knife_tile_scan: bool = os.getenv('KNIFE_TILE_SCAN', 'false').lower() == 'true'
-    object_classes: tuple[int, ...] = tuple(int(n.strip()) for n in os.getenv('OBJECT_CLASSES', '43').split(',') if n.strip())
+    object_classes: tuple[int, ...] = tuple(int(n.strip()) for n in os.getenv('OBJECT_CLASSES', '').split(',') if n.strip())
 
     # Telegram Alerts
     telegram_bot_token: str = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
