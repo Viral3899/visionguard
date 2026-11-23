@@ -1,6 +1,12 @@
 # VisionGuard — Python 3.12 Multi-Camera GPU Deployment + Auto-Training
 
-This version adds **site camera import, GPU-aware multi-camera scheduling, real online training datasets for 3 separate tasks, explicit model activation, and a dedicated inference launcher** to the existing VisionGuard surveillance dashboard.
+This version adds **independent per-camera recording controls, camera-specific subfolder storage with burned-in on-video timers, 80-class daily life object detection, and a detection display toggle with persistent threat alerts** to the VisionGuard surveillance dashboard.
+
+### Key New Features
+- **Independent Per-Camera Recording:** Every camera tile in the live matrix and focus view has its own dedicated Record/Stop button (`⏺ Rec` / `⏹ Stop (00:15)`) with active live timers. Multiple cameras can be recorded concurrently without cross-camera interference.
+- **Dedicated Subfolder Storage & Burned-In Timers:** Video clips are automatically stored in camera-specific folders (`data/recordings/<camera_id>/`). Every recorded frame has an immutable recording banner burned directly into the video (`● REC HH:MM:SS | YYYY-MM-DD HH:MM:SS | Camera Name`).
+- **Daily Life Object Detection:** YOLOv8 object detection detects common everyday objects (backpacks, cell phones, laptops, bottles, vehicles, pets, furniture, etc.) alongside people.
+- **Detection Display Toggle with Guaranteed Alarming Activity:** A button (`👁 Objects: ON/OFF`) allows operators to toggle everyday bounding boxes on or off to reduce visual clutter. **Alarming security activities (weapons, violence/fights, fire, smoke, intrusions, falls) ALWAYS remain fully visible with high-visibility alert boxes regardless of the toggle state.**
 
 ## Start here (Windows)
 
