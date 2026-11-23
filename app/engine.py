@@ -18,6 +18,7 @@ from .detectors import DetectionManager, draw_security_bounding_boxes
 from .incidents import IncidentTracker, eligible_event, draw_event_box
 from .person_tracker import PersonDeduplicator
 from .trajectory import TrajectoryTracker
+from .traffic import TrafficEnforcementManager, draw_traffic_overlays
 
 
 def draw_hud_overlay(
@@ -144,7 +145,8 @@ LOGGER = logging.getLogger(__name__)
 # Still images are reserved for meaningful security detections, never routine
 # presence/entry/exit/loitering frames.
 SNAPSHOT_EVENT_KINDS = frozenset({
-    'fire_detected', 'smoke', 'violence', 'weapon', 'fall_detected', 'unusual_activity'
+    'fire_detected', 'smoke', 'violence', 'weapon', 'fall_detected', 'unusual_activity',
+    'triple_riding', 'red_light_violation', 'seatbelt_violation'
 })
 os.environ.setdefault('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'rtsp_transport;tcp')
 
@@ -192,6 +194,7 @@ class CameraWorker:
         self._last_saved_event: dict[str, float] = {}
         self.detection_manager = DetectionManager()
         self.trajectory_tracker = TrajectoryTracker(max_history=25, max_idle_seconds=5.0)
+        self.traffic_manager = TrafficEnforcementManager()
         self.incidents = IncidentTracker(settings.incident_min_confidence,
                                          settings.incident_confirmation_frames,
                                          max_missed_frames=max(2, settings.object_every_n_frames))
@@ -382,6 +385,23 @@ class CameraWorker:
                     # Render bounding boxes for weapons and irregular activities directly on live frame
                     # This ALWAYS runs regardless of show_objects so alarming activity is never hidden
                     frame = draw_security_bounding_boxes(frame, all_events, persons=persons)
+
+                    # Run traffic violation enforcement & ANPR plate OCR
+                    detected_objs = []
+                    if getattr(self.detection_manager, 'last_object_result', None):
+                        obj_res = self.detection_manager.last_object_result
+                        for b, c in zip(obj_res.boxes, obj_res.classes):
+                            detected_objs.append({
+                                'bbox': b, 'class_id': c,
+                                'class_name': str(obj_res.class_names.get(c, ''))
+                            })
+                    traffic_violations, traffic_plates = self.traffic_manager.process_traffic(
+                        frame, detected_objs, persons, stop_line=self.camera.get('tripwire'), now=now
+                    )
+                    for t_event in traffic_violations:
+                        self._handle_event(frame, t_event)
+                    all_events.extend(traffic_violations)
+                    frame = draw_traffic_overlays(frame, traffic_violations, traffic_plates)
 
                     # Interactive geometry (zone intrusion, tripwire crossing)
                     is_intruded = any(e.get('type') in ('intrusion', 'restricted') for e in all_events)
