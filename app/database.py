@@ -167,6 +167,7 @@ class Database:
             values[k] = int(v) if (k.endswith('_enabled') or k == 'show_objects') else v
         if not values: return self.get_camera_config(cam_id)
         with self.lock, self.connection() as cx:
+            cx.execute('INSERT OR IGNORE INTO camera_config (camera_id) VALUES (?)', (cam_id,))
             cx.execute('UPDATE camera_config SET '+', '.join(f'{k}=?' for k in values)+' WHERE camera_id=?', (*values.values(), cam_id))
         return self.get_camera_config(cam_id)
 

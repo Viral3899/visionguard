@@ -55,6 +55,7 @@
             <span class="grid-hint">Double-click any camera to open focused view with PTZ zoom</span>
           </div>
           <div class="grid-toolbar-right">
+            <button class="outline-btn small-btn" id="grid-toggle-objects-btn" title="Toggle Daily Object Bounding Boxes across grid">👁 Objects: ON</button>
             <div class="layout-selector" id="grid-layout-selector" role="group" aria-label="Grid layout presets">
               <button class="layout-btn active" data-layout="auto" title="Auto fit grid">Auto</button>
               <button class="layout-btn" data-layout="1" title="1x1 single camera">1×1</button>
@@ -72,7 +73,7 @@
 
       <section class="workspace-grid" id="workspace-grid">
         <div class="panel player-panel">
-          <div class="panel-header"><div><div class="panel-title"><span class="tiny-camera-icon">▣</span> <span id="selected-title">Camera preview</span></div><div class="panel-description" id="selected-subtitle">Select a camera to view analytics</div></div><div class="panel-header-actions"><button class="outline-btn small-btn record-toggle-btn" id="record-camera-btn" title="Start/Stop Video Recording (R)">⏺ Record</button><button class="outline-btn small-btn" id="focus-back-btn" title="Return to Multi-Camera Grid View">⌂ Back to Grid</button><span class="status-pill" id="selected-status">NO SIGNAL</span></div></div>
+          <div class="panel-header"><div><div class="panel-title"><span class="tiny-camera-icon">▣</span> <span id="selected-title">Camera preview</span></div><div class="panel-description" id="selected-subtitle">Select a camera to view analytics</div></div><div class="panel-header-actions"><button class="outline-btn small-btn" id="toggle-objects-btn" title="Toggle Daily Object Bounding Boxes (O)">👁 Objects: ON</button><button class="outline-btn small-btn record-toggle-btn" id="record-camera-btn" title="Start/Stop Video Recording (R)">⏺ Record</button><button class="outline-btn small-btn" id="focus-back-btn" title="Return to Multi-Camera Grid View">⌂ Back to Grid</button><span class="status-pill" id="selected-status">NO SIGNAL</span></div></div>
           <div class="video-display" id="video-display">
             <div class="video-empty" id="video-empty"><div class="empty-icon">▣</div><h3>No active video feed</h3><p>Add an RTSP stream, USB webcam or a video file to start.</p><button class="outline-btn" id="empty-add">Configure camera</button></div>
             <div class="video-viewport" id="video-viewport">

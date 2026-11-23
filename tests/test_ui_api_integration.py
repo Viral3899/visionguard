@@ -48,6 +48,7 @@ def test_ui_html_has_required_elements():
     assert 'id="recordings-panel"' in content
     assert 'id="recordings-body"' in content
     assert 'id="recording-video-player"' in content
+    assert 'id="toggle-objects-btn"' in content
 
 
 def test_ui_js_has_recording_and_dedup_functions():
@@ -60,6 +61,24 @@ def test_ui_js_has_recording_and_dedup_functions():
     assert 'startRecordingTimer' in content
     assert 'stopRecordingTimer' in content
     assert 'unique_people_5m' in content
+    assert 'toggleObjectsDisplay' in content
+
+
+def test_camera_config_api_show_objects(test_client):
+    client, app = test_client
+    res = client.get('/api/cameras')
+    cams = res.json()
+    cam_id = cams[0]['id']
+
+    # Patch show_objects to False
+    res = client.patch(f'/api/cameras/{cam_id}/config', json={'show_objects': False})
+    assert res.status_code == 200
+    assert res.json()['show_objects'] == 0
+
+    # Patch show_objects back to True
+    res = client.patch(f'/api/cameras/{cam_id}/config', json={'show_objects': True})
+    assert res.status_code == 200
+    assert res.json()['show_objects'] == 1
 
 
 def test_camera_telemetry_includes_recording_and_dedup(test_client):

@@ -388,6 +388,82 @@ tbody tr:hover{background:#111a28}
   font-size: 11px;
   color: #94a3b8;
 }
+.tile-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+.tile-rec-btn {
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(239, 68, 68, 0.6);
+  color: #f87171;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: all .15s ease;
+  pointer-events: auto;
+}
+.tile-rec-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: #ef4444;
+  color: #fff;
+}
+.tile-rec-btn.active-rec {
+  background: #dc2626;
+  border-color: #ef4444;
+  color: #fff;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.6);
+  animation: pulse-rec 2s infinite;
+}
+@keyframes pulse-rec {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+  70% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+.rec-dot-pulse {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fff;
+  animation: blink-rec 1s infinite;
+}
+@keyframes blink-rec {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.tile-obj-btn {
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid #334155;
+  color: #94a3b8;
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s ease;
+  pointer-events: auto;
+}
+.tile-obj-btn:hover {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+.tile-obj-btn.active {
+  border-color: #06b6d4;
+  color: #22d3ee;
+  background: rgba(6, 182, 212, 0.18);
+}
+.tile-rec-timer {
+  font-family: monospace;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
 .tile-bottom-bar {
   position: absolute;
   bottom: 0;

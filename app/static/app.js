@@ -174,13 +174,14 @@ function renderSelected(force=false) {
   const recBtn = $('record-camera-btn');
   const recToolBtn = $('record-camera-tool-btn');
   const isRec = Boolean(cam?.is_recording);
+  const durSec = cam?.recording_duration || 0;
   if (recBtn) {
-    recBtn.textContent = isRec ? '⏹ Stop Recording' : '⏺ Record';
+    recBtn.textContent = isRec ? `⏹ Stop (${formatSecs(durSec)})` : '⏺ Record';
     recBtn.classList.toggle('recording-active', isRec);
     recBtn.disabled = !cam || !cam.enabled;
   }
   if (recToolBtn) {
-    recToolBtn.textContent = isRec ? '⏹ Stop Recording' : '⏺ Start Recording';
+    recToolBtn.textContent = isRec ? `⏹ Stop Recording (${formatSecs(durSec)})` : '⏺ Start Recording';
     recToolBtn.classList.toggle('recording-active', isRec);
     recToolBtn.disabled = !cam || !cam.enabled;
   }
@@ -189,6 +190,8 @@ function renderSelected(force=false) {
   } else {
     stopRecordingTimer();
   }
+
+  updateObjectButtons();
 
   $('draw-zone').disabled = $('draw-line').disabled = !cam;
   $('remove-zone').disabled = !cam || !cam.zone?.length;
@@ -337,8 +340,15 @@ function renderCameraGrid(forceRebuild=false) {
               <i class="light ${dotClass(cam.status)}"></i>
               <span class="tile-name">${esc(cam.name)}</span>
             </div>
+            <div class="tile-actions">
+              <button class="tile-obj-btn ${cam.show_objects !== false && cfg.show_objects !== 0 ? 'active' : ''}" data-cam-id="${esc(cam.id)}" title="${cam.show_objects !== false && cfg.show_objects !== 0 ? 'Daily Objects: ON (Click to Hide)' : 'Daily Objects: OFF (Click to Show)'}">
+                ${cam.show_objects !== false && cfg.show_objects !== 0 ? '👁 Obj' : '👁‍🗨 Off'}
+              </button>
+              <button class="tile-rec-btn ${cam.is_recording ? 'active-rec' : ''}" data-cam-id="${esc(cam.id)}" title="${cam.is_recording ? 'Stop Recording' : 'Start Recording'}">
+                ${cam.is_recording ? `<span class="rec-dot-pulse"></span> <span class="tile-rec-timer" data-cam-id="${esc(cam.id)}">${formatSecs(cam.recording_duration || 0)}</span> Stop` : '⏺ Rec'}
+              </button>
+            </div>
             <div class="tile-stats">
-              ${cam.is_recording ? '<span class="tile-rec-dot">● REC</span>' : ''}
               <span>👥 ${cam.current_people || 0}</span>
               <span>5m: ${cam.unique_people_5m || 0}</span>
               <span>${cam.fps || 0} FPS</span>
@@ -380,6 +390,19 @@ function renderCameraGrid(forceRebuild=false) {
         switchToFocusView(camId);
       };
     });
+
+    grid.querySelectorAll('.tile-rec-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        toggleRecording(btn.dataset.camId);
+      };
+    });
+    grid.querySelectorAll('.tile-obj-btn').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        toggleObjectsDisplay(btn.dataset.camId);
+      };
+    });
   } else {
     // In-place update: never re-assign active src to avoid tearing down connections
     state.cameras.forEach(cam => {
@@ -391,7 +414,24 @@ function renderCameraGrid(forceRebuild=false) {
       const lightEl = tile.querySelector('.light');
       if (lightEl) lightEl.className = 'light ' + dotClass(cam.status);
       const statsEl = tile.querySelector('.tile-stats');
-      if (statsEl) statsEl.innerHTML = `${cam.is_recording ? '<span class="tile-rec-dot">● REC</span>' : ''}<span>👥 ${cam.current_people || 0}</span><span>5m: ${cam.unique_people_5m || 0}</span><span>${cam.fps || 0} FPS</span>`;
+      if (statsEl) statsEl.innerHTML = `<span>👥 ${cam.current_people || 0}</span><span>5m: ${cam.unique_people_5m || 0}</span><span>${cam.fps || 0} FPS</span>`;
+
+      const actionsEl = tile.querySelector('.tile-actions');
+      if (actionsEl) {
+        const objBtn = actionsEl.querySelector('.tile-obj-btn');
+        if (objBtn) {
+          const isObjOn = cam.show_objects !== false && (cam.config?.show_objects !== 0);
+          objBtn.className = `tile-obj-btn ${isObjOn ? 'active' : ''}`;
+          objBtn.textContent = isObjOn ? '👁 Obj' : '👁‍🗨 Off';
+        }
+        const recBtn = actionsEl.querySelector('.tile-rec-btn');
+        if (recBtn) {
+          const isRec = Boolean(cam.is_recording);
+          recBtn.className = `tile-rec-btn ${isRec ? 'active-rec' : ''}`;
+          recBtn.innerHTML = isRec ? `<span class="rec-dot-pulse"></span> <span class="tile-rec-timer" data-cam-id="${esc(cam.id)}">${formatSecs(cam.recording_duration || 0)}</span> Stop` : '⏺ Rec';
+        }
+      }
+
       const img = tile.querySelector('img.tile-stream');
       if (state.viewMode === 'grid' && cam.enabled && img && !img.getAttribute('src')) {
         img.src = `/stream/${encodeURIComponent(cam.id)}`;
@@ -759,6 +799,10 @@ async function renderDetectionConfig() {
           <input type="checkbox" id="cfg-object" ${cfg.object_enabled ? 'checked' : ''} />
           <span class="toggle-label"><strong>📦 General Objects</strong><br><small>All COCO classes (vehicles, animals, items)</small></span>
         </label>
+        <label class="toggle-item">
+          <input type="checkbox" id="cfg-show_objects" ${cfg.show_objects !== 0 ? 'checked' : ''} />
+          <span class="toggle-label"><strong>👁 Daily Objects Overlay</strong><br><small>Everyday items & person boxes (Alarming threats always show)</small></span>
+        </label>
       </div>
       <div class="toggle-grid" style="margin-top: 16px;">
         <label class="toggle-item">
@@ -781,6 +825,8 @@ async function renderDetectionConfig() {
     const el = $(`cfg-${key}`);
     if (el) el.onchange = () => updateCameraConfig(key + '_enabled', el.checked);
   });
+  const showObjEl = $('cfg-show_objects');
+  if (showObjEl) showObjEl.onchange = () => updateCameraConfig('show_objects', showObjEl.checked);
   const sens = $('cfg-sensitivity');
   if (sens) sens.oninput = (e) => {
     $('cfg-sensitivity-value').textContent = parseFloat(e.target.value).toFixed(1) + 'x';
@@ -882,8 +928,16 @@ async function runUploadedVideoTest(event) {
 }
 
 // Video recording controls
+const cameraRecordingStartTimes = {};
 let recordingTimerInterval = null;
 let recordingStartTime = 0;
+
+function formatSecs(sec) {
+  const s = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+}
 
 async function toggleRecording(cameraId) {
   const cam = cameraId ? state.cameras.find(c => c.id === cameraId) : getCam();
@@ -894,14 +948,16 @@ async function toggleRecording(cameraId) {
     if (isRec) {
       const res = await req(`/api/cameras/${encodeURIComponent(cam.id)}/recording/stop`, { method: 'POST' });
       cam.is_recording = false;
+      delete cameraRecordingStartTimes[cam.id];
       toast(`Recording saved: ${res.filename} (${res.duration_seconds}s, ${Math.round((res.file_size_bytes || 0) / 1024)} KB)`);
-      stopRecordingTimer();
+      if (getCam()?.id === cam.id) stopRecordingTimer();
       await refreshRecordings();
     } else {
       const res = await req(`/api/cameras/${encodeURIComponent(cam.id)}/recording/start`, { method: 'POST' });
       cam.is_recording = true;
+      cameraRecordingStartTimes[cam.id] = Date.now();
       toast(`Recording started for ${cam.name}`);
-      startRecordingTimer();
+      if (getCam()?.id === cam.id) startRecordingTimer();
     }
     renderSelected();
     renderCameraList();
@@ -911,9 +967,76 @@ async function toggleRecording(cameraId) {
   }
 }
 
+async function toggleObjectsDisplay(cameraId) {
+  const cam = cameraId ? state.cameras.find(c => c.id === cameraId) : getCam();
+  if (!cam) return toast('Select a camera first', true);
+  const current = cam.show_objects !== undefined ? cam.show_objects : (cam.config?.show_objects !== 0);
+  const next = !current;
+  try {
+    await req(`/api/cameras/${encodeURIComponent(cam.id)}/config`, {
+      method: 'PATCH',
+      body: JSON.stringify({ show_objects: next })
+    });
+    cam.show_objects = next;
+    if (!cam.config) cam.config = {};
+    cam.config.show_objects = next ? 1 : 0;
+    updateObjectButtons();
+    if (state.viewMode === 'grid') renderCameraGrid();
+    toast(`Daily objects ${next ? 'enabled' : 'hidden'} for ${cam.name}. Alarming threat alerts remain always visible.`);
+  } catch (err) {
+    toast(`Failed to update object display: ${err.message}`, true);
+  }
+}
+
+async function toggleAllObjectsDisplay() {
+  if (!state.cameras.length) return;
+  const anyOn = state.cameras.some(c => (c.show_objects !== undefined ? c.show_objects : (c.config?.show_objects !== 0)));
+  const next = !anyOn;
+  try {
+    await Promise.all(state.cameras.map(c =>
+      req(`/api/cameras/${encodeURIComponent(c.id)}/config`, {
+        method: 'PATCH',
+        body: JSON.stringify({ show_objects: next })
+      })
+    ));
+    state.cameras.forEach(c => {
+      c.show_objects = next;
+      if (!c.config) c.config = {};
+      c.config.show_objects = next ? 1 : 0;
+    });
+    updateObjectButtons();
+    if (state.viewMode === 'grid') renderCameraGrid();
+    toast(`Daily objects ${next ? 'enabled' : 'hidden'} across all cameras. Alarming threat alerts remain always visible.`);
+  } catch (err) {
+    toast(`Error toggling objects: ${err.message}`, true);
+  }
+}
+
+function updateObjectButtons() {
+  const cam = getCam();
+  const show = cam ? (cam.show_objects !== undefined ? cam.show_objects : (cam.config?.show_objects !== 0)) : true;
+  const btn = $('toggle-objects-btn');
+  if (btn) {
+    btn.textContent = show ? '👁 Objects: ON' : '👁 Objects: OFF';
+    btn.style.borderColor = show ? '#06b6d4' : '#2d445b';
+    btn.style.color = show ? '#22d3ee' : '#94a8c0';
+  }
+  const gridBtn = $('grid-toggle-objects-btn');
+  if (gridBtn) {
+    const anyOn = state.cameras.some(c => (c.show_objects !== undefined ? c.show_objects : (c.config?.show_objects !== 0)));
+    gridBtn.textContent = anyOn ? '👁 Objects: ON' : '👁 Objects: OFF';
+    gridBtn.style.borderColor = anyOn ? '#06b6d4' : '#2d445b';
+    gridBtn.style.color = anyOn ? '#22d3ee' : '#94a8c0';
+  }
+}
+
 function startRecordingTimer() {
   if (recordingTimerInterval) clearInterval(recordingTimerInterval);
-  recordingStartTime = Date.now();
+  const cam = getCam();
+  if (cam && !cameraRecordingStartTimes[cam.id]) {
+    cameraRecordingStartTimes[cam.id] = Date.now() - ((cam.recording_duration || 0) * 1000);
+  }
+  recordingStartTime = (cam && cameraRecordingStartTimes[cam.id]) ? cameraRecordingStartTimes[cam.id] : Date.now();
   $('rec-badge')?.classList.remove('hidden');
   recordingTimerInterval = setInterval(() => {
     const elapsedSec = Math.floor((Date.now() - recordingStartTime) / 1000);
@@ -1154,6 +1277,9 @@ async function init(){
       } else if (e.key === 'r' || e.key === 'R') {
         e.preventDefault();
         toggleRecording();
+      } else if (e.key === 'o' || e.key === 'O') {
+        e.preventDefault();
+        toggleObjectsDisplay();
       }
     }
   });
@@ -1162,10 +1288,35 @@ async function init(){
   $('record-camera-btn')?.addEventListener('click', () => toggleRecording());
   $('record-camera-tool-btn')?.addEventListener('click', () => toggleRecording());
   $('refresh-recordings-btn')?.addEventListener('click', () => refreshRecordings());
+  $('toggle-objects-btn')?.addEventListener('click', () => toggleObjectsDisplay());
+  $('grid-toggle-objects-btn')?.addEventListener('click', () => toggleAllObjectsDisplay());
   $('close-preview-btn')?.addEventListener('click', () => {
     $('recording-player-container')?.classList.add('hidden');
     $('recording-video-player')?.pause();
   });
+
+  // Per-camera live timer ticker
+  setInterval(() => {
+    state.cameras.forEach(cam => {
+      if (cam.is_recording) {
+        if (!cameraRecordingStartTimes[cam.id]) {
+          cameraRecordingStartTimes[cam.id] = Date.now() - ((cam.recording_duration || 0) * 1000);
+        }
+        const elapsedSec = Math.floor((Date.now() - cameraRecordingStartTimes[cam.id]) / 1000);
+        const timerStr = formatSecs(elapsedSec);
+        document.querySelectorAll(`.tile-rec-timer[data-cam-id="${cam.id}"]`).forEach(el => {
+          el.textContent = timerStr;
+        });
+        if (state.selected === cam.id) {
+          if ($('rec-timer')) $('rec-timer').textContent = `REC ${timerStr}`;
+          const recBtn = $('record-camera-btn');
+          if (recBtn) recBtn.textContent = `⏹ Stop (${timerStr})`;
+        }
+      } else {
+        delete cameraRecordingStartTimes[cam.id];
+      }
+    });
+  }, 1000);
 
   // Alert config buttons
   $('edit-camera').onclick = editCameraModal;
