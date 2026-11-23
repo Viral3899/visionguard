@@ -77,6 +77,7 @@ class Database:
                     object_enabled INTEGER NOT NULL DEFAULT 1,
                     telegram_enabled INTEGER NOT NULL DEFAULT 1,
                     tts_enabled INTEGER NOT NULL DEFAULT 1,
+                    show_objects INTEGER NOT NULL DEFAULT 1,
                     sensitivity REAL NOT NULL DEFAULT 1.0,
                     FOREIGN KEY(camera_id) REFERENCES cameras(id)
                 );
@@ -112,11 +113,15 @@ class Database:
             except sqlite3.OperationalError:
                 pass
             # Migration: add camera_config table entries for existing cameras
+            try:
+                cx.execute('ALTER TABLE camera_config ADD COLUMN show_objects INTEGER NOT NULL DEFAULT 1')
+            except sqlite3.OperationalError:
+                pass
             cams = cx.execute('SELECT id FROM cameras').fetchall()
             for cam in cams:
                 cx.execute('''
-                    INSERT OR IGNORE INTO camera_config (camera_id, fire_enabled, violence_enabled, anomaly_enabled, object_enabled, telegram_enabled, tts_enabled, sensitivity)
-                    VALUES (?, 1, 1, 1, 1, 1, 1, 1.0)
+                    INSERT OR IGNORE INTO camera_config (camera_id, fire_enabled, violence_enabled, anomaly_enabled, object_enabled, telegram_enabled, tts_enabled, show_objects, sensitivity)
+                    VALUES (?, 1, 1, 1, 1, 1, 1, 1, 1.0)
                 ''', (cam['id'],))
 
     @staticmethod
@@ -155,11 +160,11 @@ class Database:
         return dict(row) if row else None
 
     def update_camera_config(self, cam_id, changes):
-        allowed = {'fire_enabled', 'violence_enabled', 'anomaly_enabled', 'object_enabled', 'telegram_enabled', 'tts_enabled', 'sensitivity'}
+        allowed = {'fire_enabled', 'violence_enabled', 'anomaly_enabled', 'object_enabled', 'telegram_enabled', 'tts_enabled', 'show_objects', 'sensitivity'}
         values = {}
         for k, v in changes.items():
             if k not in allowed: continue
-            values[k] = int(v) if k.endswith('_enabled') else v
+            values[k] = int(v) if (k.endswith('_enabled') or k == 'show_objects') else v
         if not values: return self.get_camera_config(cam_id)
         with self.lock, self.connection() as cx:
             cx.execute('UPDATE camera_config SET '+', '.join(f'{k}=?' for k in values)+' WHERE camera_id=?', (*values.values(), cam_id))
@@ -201,8 +206,8 @@ class Database:
                 json.dumps(payload.tripwire), int(payload.enabled), now, getattr(payload, 'client_id', None)))
             cx.execute('INSERT INTO totals(camera_id) VALUES (?)', (cam_id,))
             cx.execute('''
-                INSERT INTO camera_config (camera_id, fire_enabled, violence_enabled, anomaly_enabled, object_enabled, telegram_enabled, tts_enabled, sensitivity)
-                VALUES (?, 1, 1, 1, 1, 1, 1, 1.0)
+                INSERT INTO camera_config (camera_id, fire_enabled, violence_enabled, anomaly_enabled, object_enabled, telegram_enabled, tts_enabled, show_objects, sensitivity)
+                VALUES (?, 1, 1, 1, 1, 1, 1, 1, 1.0)
             ''', (cam_id,))
         return self.get_camera(cam_id)
 

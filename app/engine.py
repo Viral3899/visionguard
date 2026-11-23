@@ -111,6 +111,7 @@ class CameraWorker:
                 'is_recording': is_rec,
                 'recording_duration': rec_duration,
                 'recording_start_time': rec_status.get('start_time') if is_rec else None,
+                'show_objects': bool(self.camera_config.get('show_objects', 1)),
                 'fps': round(self.fps, 1),
                 'last_frame_age_seconds': round(time.monotonic() - self.last_frame, 1) if self.last_frame else None}
 
@@ -202,18 +203,19 @@ class CameraWorker:
                                 person_boxes.append([x1/w, y1/h, x2/w, y2/h])
                         # Use the detector's draw method for better visuals
                         color = (20, 220, 167)  # teal for persons
-                        # Draw only person class (class_id == 0)
+                        # Draw only person class (class_id == 0) if show_objects is enabled
+                        show_objects = bool(self.camera_config.get('show_objects', 1))
                         person_boxes_filtered = [b for b, c in zip(boxes, classes) if c == 0]
                         person_classes_filtered = [c for c in classes if c == 0]
                         person_conf_filtered = [conf for conf, c in zip(person_result.confidences, classes) if c == 0]
-                        if person_boxes_filtered and hasattr(self.detection_manager, 'object_detector'):
+                        if show_objects and person_boxes_filtered and hasattr(self.detection_manager, 'object_detector'):
                             person_result_draw = DetectionResult(
                                 boxes=person_boxes_filtered,
                                 classes=person_classes_filtered,
                                 confidences=person_conf_filtered,
                                 class_names={0: 'person'}
                             )
-                            # Use the detection manager's object detector to draw (or any detector)
+                            # Use the detection manager's object detector to draw person boxes
                             frame = self.detection_manager.object_detector.draw(frame, person_result_draw, color)
                     
                     # Run analytics (intrusion, tripwire)
@@ -227,6 +229,13 @@ class CameraWorker:
                     # Run advanced detections
                     detection_events = self.detection_manager.process_frame(
                         frame, persons, self.camera['id'], self.camera_config)
+                    
+                    # Render daily life objects if show_objects is enabled
+                    show_objects = bool(self.camera_config.get('show_objects', 1))
+                    if show_objects and getattr(self.detection_manager, 'last_object_result', None):
+                        frame = self.detection_manager.object_detector.draw_daily_objects(
+                            frame, self.detection_manager.last_object_result
+                        )
                     
                     # Analytics still update counters, but never generate routine
                     # snapshots or Telegram. Security snapshots require repeated,
@@ -242,6 +251,7 @@ class CameraWorker:
                                            if eligible_event(item, settings.incident_min_confidence)]
                     
                     # Render bounding boxes for weapons and irregular activities directly on live frame
+                    # This ALWAYS runs regardless of show_objects so alarming activity is never hidden
                     frame = draw_security_bounding_boxes(frame, all_events, persons=persons)
 
                     self._draw_geometry(frame, w, h)

@@ -59,8 +59,8 @@ def _ensure_default_camera(db):
                             json.dumps([]), 1, now))
                         cx.execute('INSERT INTO totals(camera_id) VALUES (?)', (cam_id,))
                         cx.execute('''
-                            INSERT INTO camera_config (camera_id, fire_enabled, violence_enabled, anomaly_enabled, object_enabled, telegram_enabled, tts_enabled, sensitivity)
-                            VALUES (?, 1, 1, 1, 1, 1, 1, 1.0)
+                            INSERT INTO camera_config (camera_id, fire_enabled, violence_enabled, anomaly_enabled, object_enabled, telegram_enabled, tts_enabled, show_objects, sensitivity)
+                            VALUES (?, 1, 1, 1, 1, 1, 1, 1, 1.0)
                         ''', (cam_id,))
                     return
     except Exception as e:
@@ -79,6 +79,7 @@ class CameraConfigUpdate(BaseModel):
     object_enabled: bool | None = None
     telegram_enabled: bool | None = None
     tts_enabled: bool | None = None
+    show_objects: bool | None = None
     sensitivity: float | None = None
 
 
